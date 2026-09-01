@@ -26,7 +26,7 @@ func hostPicker(in *inv.Inventory, current string, onDone func(limit string), on
 	for _, g := range in.Groups {
 		entries = append(entries, entry{
 			name:  g.Name,
-			label: fmt.Sprintf("%-28s %d hosts", g.Name, len(g.Hosts)),
+			label: fmt.Sprintf("%-28s %s", g.Name, plural(len(g.Hosts), "host")),
 		})
 	}
 	for _, h := range in.Hosts {
@@ -95,6 +95,14 @@ func hostPicker(in *inv.Inventory, current string, onDone func(limit string), on
 		return ev
 	})
 	return list
+}
+
+// plural is "1 host", "3 hosts".
+func plural(n int, word string) string {
+	if n == 1 {
+		return fmt.Sprintf("%d %s", n, word)
+	}
+	return fmt.Sprintf("%d %ss", n, word)
 }
 
 // parseLimit splits a --limit value into its patterns. Both separators

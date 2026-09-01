@@ -22,13 +22,15 @@ var (
 )
 
 // Markers are ASCII: this is a tool for a console over ssh as much as for a
-// terminal with a font that has everything.
+// terminal with a font that has everything. No square brackets in any of
+// them — every one of these strings is drawn through tview's tag parser,
+// which would take "[x]" for a colour.
 const (
-	iconProject  = "[p]"
-	iconDir      = "[+]"
-	iconPlaybook = " * "
-	markOn       = "[x]"
-	markOff      = "[ ]"
+	iconProject  = "#"
+	iconDir      = "+"
+	iconPlaybook = "*"
+	markOn       = "(x)"
+	markOff      = "( )"
 )
 
 // tag renders a colour as a tview colour tag. The terminal default has no

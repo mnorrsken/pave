@@ -6,21 +6,26 @@ runtime of its own.
 
 ```
 pave  ~/dev/ansible                        cert 11h32m · ansible-admin,pi,root
-┌ playbooks ──────────────┬ playbooks/onboard.yml ─────────────────────────────┐
-│ [p] base  playbooks/    │ Onboard a host onto the SSH user CA.               │
-│  *  onboard             │                                                    │
-│  *  patch               │   1. connect with a password  (you supply it)      │
-│ [p] cluster  playbooks/ │   2. install CA trust + principal mapping          │
-│  *  k3s-pve-reboot      │   3. PROVE certificate login works                 │
-│  *  pve-upgrade         │   4. only then disable password authentication     │
-│                         ├ options ───────────────────────────────────────────┤
-│                         │ check mode  [ ]    diff  [x]    verbosity  none    │
-│                         │ limit       kubeworkers                            │
-│                         │ tags                                               │
-│                         │  < run >  < hosts… >  < credentials… >             │
-│                         └────────────────────────────────────────────────────┤
-│                         $ ansible-playbook playbooks/onboard.yml --diff ...   │
-└─────────────────────────┴────────────────────────────────────────────────────┘
+┌──────── playbooks ─────────┬─────────── playbooks/onboard.yml ───────────────┐
+│# base playbooks/           │Onboard a host onto the SSH user CA.             │
+│  * onboard                 │                                                 │
+│  * patch                   │  1. connect with a password (you supply it)     │
+│# cluster playbooks/        │  2. install CA trust + principal mapping        │
+│  * k3s-pve-reboot          │  3. PROVE certificate login works               │
+│  * pve-upgrade             │  4. only then disable password authentication   │
+│                            ├──────────────── options ────────────────────────┤
+│                            │ check mode ( )                                  │
+│                            │ diff       (x)                                  │
+│                            │ verbosity  none                                 │
+│                            │ limit      kubeworkers                          │
+│                            │ tags                                            │
+│                            │                                                 │
+│                            │   run     hosts…     credentials…               │
+│                            ├─────────────────────────────────────────────────┤
+│                            │$ ansible-playbook playbooks/onboard.yml --diff … │
+└────────────────────────────┴─────────────────────────────────────────────────┘
+ 3 playbooks in base, cluster
+ enter options · F5 run · F2 hosts · / filter · r rescan · c cert · ? help · q quit
 ```
 
 Nothing about a particular repository layout is built in. pave scans a root

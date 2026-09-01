@@ -47,7 +47,16 @@ for any UI change.
 - **Escape the brackets.** ansible prints `PLAY [all]`, `TASK [role : task]`,
   `ok: [host]`, and a TextView with dynamic colours eats every one of them as
   a colour tag. `outputPane.w` escapes first, then translates the ANSI codes;
-  do not swap the order.
+  do not swap the order. The same goes for anything else drawn through tview:
+  the tree markers and the checkbox strings in `theme.go` have no brackets in
+  them for exactly this reason.
+- **Size a form box with `formBoxHeight`.** tview draws a form's buttons on a
+  row below its items with a blank one in between, and its default border
+  padding adds two more; get it wrong and the buttons are simply not there,
+  with nothing to say so. `compactForm` turns the padding off so the count
+  adds up. `TestTheWholeFormIsDrawn` guards it.
+- An unchecked tview checkbox draws a single space, which is invisible on a
+  terminal-default background. `showCheckbox` gives it something to see.
 - **Passwords go in files, never in argv.** `--connection-password-file` and
   `--become-password-file`, 0600, removed when the run ends.
 - The whole run form counts as a typing context: single letter keys must not

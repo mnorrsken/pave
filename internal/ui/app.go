@@ -601,7 +601,7 @@ func (a *App) openCredentials() {
 			}
 		},
 		func() { a.closeModal(name) },
-	), 74, 13))
+	), 74, formBoxHeight(5)))
 }
 
 // openHostPicker needs the inventory of the selected project, which is read
@@ -686,14 +686,14 @@ func (a *App) openCertForm() {
 	}
 	c := a.opts.Config.SSHCert
 	form := tview.NewForm()
-	form.SetBackgroundColor(colorBackground)
-	form.SetFieldBackgroundColor(colorBackground)
+	compactForm(form)
 	form.AddInputField("CA key", config.Expand(c.CAKey), 0, nil, nil)
 	form.AddInputField("key to sign", config.Expand(c.Key), 0, nil, nil)
 	form.AddInputField("validity", c.Validity, 0, nil, nil)
 	form.AddInputField("principals", strings.Join(c.Principals, ","), 0, nil, nil)
 	form.AddInputField("identity", c.Identity, 0, nil, nil)
 	form.AddCheckbox("load into ssh-agent", c.AddToAgent == nil || *c.AddToAgent, nil)
+	showCheckbox(form.GetFormItem(5).(*tview.Checkbox))
 
 	var name string
 	text := func(i int) string {
@@ -724,7 +724,7 @@ func (a *App) openCertForm() {
 	form.AddButton("cancel", func() { a.closeModal(name) })
 	form.SetCancelFunc(func() { a.closeModal(name) })
 	form.SetBorder(true).SetTitle(" sign a short lived certificate ")
-	name = a.openModal(center(form, 76, 13))
+	name = a.openModal(center(form, 76, formBoxHeight(6)))
 }
 
 // onboard is the shortcut for a host that has no certificate yet: the

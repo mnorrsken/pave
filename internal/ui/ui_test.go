@@ -493,3 +493,34 @@ func TestBackspaceEditsTheFormRatherThanOpeningAPicker(t *testing.T) {
 	h.key(tcell.KeyF2)
 	h.waitFor("the picker", func() bool { return h.app.modalOpen() })
 }
+
+// Everything the form offers has to be on the screen. tview draws a form's
+// buttons below its items, outside the height a naive count would give it,
+// and an unchecked checkbox is a single space unless it is told otherwise —
+// both have already left the pane looking empty.
+func TestTheWholeFormIsDrawn(t *testing.T) {
+	h := newHarness(t)
+	h.sync()
+	screen := h.screenText()
+
+	for _, want := range []string{"check mode", "extra args", "run", "hosts…", "credentials…", markOff} {
+		if !strings.Contains(screen, want) {
+			t.Errorf("the screen does not show %q:\n%s", want, screen)
+		}
+	}
+	// The tree markers are drawn through tview's tag parser, so they must not
+	// look like colour tags either.
+	if !strings.Contains(screen, iconProject+" base") {
+		t.Errorf("the project marker is missing:\n%s", screen)
+	}
+}
+
+func TestPickerShowsWhatIsSelected(t *testing.T) {
+	h := newHarness(t)
+	h.press('L')
+	h.waitFor("the picker", func() bool { return h.app.modalOpen() })
+	h.press(' ')
+	h.waitFor("the mark to be drawn", func() bool {
+		return strings.Contains(h.screenText(), markOn+" kubemasters")
+	})
+}

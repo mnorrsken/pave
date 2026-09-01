@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -296,4 +297,23 @@ func (h *harness) status() string {
 	var s string
 	h.inspect(func() { s = h.app.status.text() })
 	return s
+}
+
+// screenText is everything currently drawn, one line per row. Style is
+// dropped: what these tests care about is whether something was drawn at all.
+func (h *harness) screenText() string {
+	cells, w, ht := h.screen.GetContents()
+	var b strings.Builder
+	for y := 0; y < ht; y++ {
+		for x := 0; x < w; x++ {
+			r := cells[y*w+x].Runes
+			if len(r) == 0 || r[0] == 0 {
+				b.WriteRune(' ')
+				continue
+			}
+			b.WriteRune(r[0])
+		}
+		b.WriteRune('\n')
+	}
+	return b.String()
 }

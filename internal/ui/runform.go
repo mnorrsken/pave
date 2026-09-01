@@ -23,9 +23,8 @@ const (
 	fieldCount
 )
 
-// formHeight is the room the run form needs: one row per field, one for the
-// buttons, two for the border.
-const formHeight = fieldCount + 3
+// formHeight is the room the run form needs. See formBoxHeight.
+const formHeight = fieldCount + formExtraRows
 
 // credentials are for a host that cannot be reached with the operator
 // certificate yet — a machine being onboarded, typically.
@@ -84,7 +83,7 @@ func newRunForm(d config.Defaults, onRun, onHosts, onCreds func()) *runForm {
 	f.SetBackgroundColor(colorBackground)
 	f.SetFieldBackgroundColor(colorBackground)
 	f.SetBorder(true).SetBorderColor(colorBorder).SetTitleColor(colorTitle).SetTitle(" options ")
-	f.SetItemPadding(0)
+	compactForm(f.Form)
 
 	notify := func(string) {
 		if f.changed != nil {
@@ -104,7 +103,34 @@ func newRunForm(d config.Defaults, onRun, onHosts, onCreds func()) *runForm {
 	f.AddButton("run", onRun)
 	f.AddButton("hosts…", onHosts)
 	f.AddButton("credentials…", onCreds)
+
+	showCheckbox(f.checkbox(fieldCheck))
+	showCheckbox(f.checkbox(fieldDiff))
 	return f
+}
+
+// formExtraRows is what a form needs on top of one row per item: the blank
+// row tview leaves before the buttons, the button row itself, and the two
+// border rows. It only adds up with compactForm's padding.
+const formExtraRows = 4
+
+// formBoxHeight is how tall a box has to be to show the whole of a form.
+func formBoxHeight(items int) int { return items + formExtraRows }
+
+// compactForm turns off the padding tview would otherwise put above and
+// below, so a dialog can be exactly as tall as its contents.
+func compactForm(f *tview.Form) {
+	f.SetBackgroundColor(colorBackground)
+	f.SetFieldBackgroundColor(colorBackground)
+	f.SetBorderPadding(0, 0, 1, 1)
+	f.SetItemPadding(0)
+}
+
+// showCheckbox gives a checkbox something to see. tview draws an unchecked
+// box as a single space, which on a terminal-default background is nothing at
+// all. No square brackets: the strings go through the tag parser.
+func showCheckbox(c *tview.Checkbox) {
+	c.SetUncheckedString(markOff).SetCheckedString(markOn)
 }
 
 func (f *runForm) input(i int) *tview.InputField {
@@ -155,13 +181,13 @@ func (f *runForm) apply(s *run.Spec) {
 // certificate yet.
 func credentialsForm(c credentials, onSave func(credentials), onCancel func()) tview.Primitive {
 	form := tview.NewForm()
-	form.SetBackgroundColor(colorBackground)
-	form.SetFieldBackgroundColor(colorBackground)
+	compactForm(form)
 	form.AddInputField("target (not in the inventory)", c.Target, 0, nil, nil)
 	form.AddInputField("user", c.User, 0, nil, nil)
 	form.AddPasswordField("ssh password", c.Password, 0, '*', nil)
 	form.AddPasswordField("become password", c.Become, 0, '*', nil)
 	form.AddCheckbox("let ansible prompt instead", c.Ask, nil)
+	showCheckbox(form.GetFormItem(4).(*tview.Checkbox))
 
 	read := func() credentials {
 		return credentials{
