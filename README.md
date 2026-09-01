@@ -129,3 +129,7 @@ make dist      # cross-compile into dist/
 The tests drive the whole interface on a tcell simulation screen with the
 runner, the inventory and the certificate reader replaced, so `make test`
 needs neither ansible nor a terminal.
+
+## Licence
+
+Apache 2.0.
