@@ -6,6 +6,13 @@ follow [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-09-02
+
+### Fixed
+
+- The integration tests no longer time out on a cold CI runner, which is what
+  stopped 0.1.0 from publishing. pave itself is unchanged from 0.1.0.
+
 ## [0.1.0] - 2026-09-02
 
 ### Added
