@@ -263,7 +263,15 @@ func (h *harness) sync() { h.inspect(func() {}) }
 // handled by the time the next update runs.
 func (h *harness) waitFor(what string, cond func() bool) {
 	h.t.Helper()
-	deadline := time.Now().Add(3 * time.Second)
+	h.waitWithin(10*time.Second, what, cond)
+}
+
+// waitWithin is waitFor with room for something slow. A real ansible starting
+// on a cold CI runner takes seconds, not milliseconds, and the default here is
+// sized for a fake.
+func (h *harness) waitWithin(limit time.Duration, what string, cond func() bool) {
+	h.t.Helper()
+	deadline := time.Now().Add(limit)
 	for time.Now().Before(deadline) {
 		ok := false
 		h.inspect(func() { ok = cond() })
@@ -272,7 +280,7 @@ func (h *harness) waitFor(what string, cond func() bool) {
 		}
 		time.Sleep(3 * time.Millisecond)
 	}
-	h.t.Fatalf("timed out waiting for %s", what)
+	h.t.Fatalf("timed out after %s waiting for %s", limit, what)
 }
 
 func (h *harness) press(r rune) {

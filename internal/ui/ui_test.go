@@ -463,7 +463,8 @@ func TestRealAnsibleSyntaxCheck(t *testing.T) {
 
 	h.key(tcell.KeyF5)
 	h.waitFor("the syntax check to start", func() bool { return h.app.running })
-	h.waitFor("the syntax check to finish", func() bool { return !h.app.running })
+	// ansible is python: on a cold runner it takes seconds to get going.
+	h.waitWithin(2*time.Minute, "the syntax check to finish", func() bool { return !h.app.running })
 	if h.status() != "done" {
 		t.Errorf("status = %q, output:\n%s", h.status(), h.app.output.text())
 	}
