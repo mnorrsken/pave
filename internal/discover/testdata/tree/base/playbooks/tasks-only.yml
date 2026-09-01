@@ -1,0 +1,2 @@
+- name: A task file, not a play
+  ansible.builtin.ping:

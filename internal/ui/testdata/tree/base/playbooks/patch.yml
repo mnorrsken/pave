@@ -1,0 +1,7 @@
+---
+# Patch every host.
+#
+#   ansible-playbook playbooks/patch.yml -l kubeworkers
+
+- name: Patch
+  hosts: all

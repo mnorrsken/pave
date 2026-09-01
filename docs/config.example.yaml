@@ -1,0 +1,38 @@
+# pave's settings. Copy to ~/.config/pave/config.yaml and edit; every key is
+# optional. A .pave.yaml in the root being browsed overrides what is here.
+
+# Where to look for ansible projects. The -root flag and $PAVE_ROOT win over
+# this, and with none of them set pave scans the current directory.
+root: ~/dev/projects/ansible-restructure/workspace
+
+# Preselected by the o key, relative to the root. Leave it out to pick the
+# playbook yourself.
+onboard_playbook: base/playbooks/onboard.yml
+
+# The command a run executes. Point it at a wrapper script to run playbooks in
+# a container.
+ansible_playbook_bin: ansible-playbook
+ansible_inventory_bin: ansible-inventory
+
+# Added to the environment of every run and of every inventory read.
+env:
+  SOPS_AGE_KEY_FILE: ~/.config/sops/age/keys.txt
+
+# What the c key signs.
+ssh_cert:
+  ca_key: ~/ssh-ca/user_ca
+  key: ~/.ssh/id_ed25519
+  validity: +12h
+  principals: [ansible-admin, pi, martin, root, dietpi, admin]
+  # identity: martin@laptop     # defaults to <user>@<host>
+  add_to_agent: true
+
+# What a newly opened playbook starts with.
+defaults:
+  check: false
+  diff: true
+  verbosity: 0
+
+# Only if the defaults do not fit your tree.
+# playbook_dirs: [playbooks, playbook]
+# exclude: [.git, .galaxy, node_modules, venv, .venv, roles, collections, group_vars, host_vars, files, templates]

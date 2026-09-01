@@ -1,0 +1,2 @@
+- name: never a playbook, and in an excluded directory
+  ansible.builtin.ping:

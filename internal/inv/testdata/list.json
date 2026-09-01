@@ -1,0 +1,24 @@
+{
+    "_meta": {
+        "hostvars": {
+            "master1": {"ansible_host": "10.0.0.1"}
+        }
+    },
+    "all": {
+        "children": ["ungrouped", "kubenodes", "proxmox_hosts", "empty_group"]
+    },
+    "empty_group": {},
+    "kubemasters": {
+        "hosts": ["master1", "master2"]
+    },
+    "kubenodes": {
+        "children": ["kubemasters", "kubeworkers"]
+    },
+    "kubeworkers": {
+        "hosts": ["worker1", "worker2"]
+    },
+    "proxmox_hosts": {
+        "hosts": ["pve1", "store1"]
+    },
+    "ungrouped": {}
+}

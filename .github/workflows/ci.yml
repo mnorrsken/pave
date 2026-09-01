@@ -1,0 +1,66 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# Tags are covered by release.yml, which runs the same checks before it
+# publishes anything.
+
+jobs:
+  test:
+    name: Test on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      # No windows: the runner needs a pty, and there is none there.
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Check formatting
+        if: runner.os == 'Linux'
+        run: |
+          unformatted=$(gofmt -l cmd internal)
+          if [ -n "$unformatted" ]; then
+            echo "gofmt needed on:"; echo "$unformatted"; exit 1
+          fi
+
+      - run: go vet ./...
+
+      - name: Unit tests
+        run: go test -race ./...
+
+      # The integration tests need a real ansible; installing it is cheap
+      # next to what they check, which is that pave's idea of an inventory
+      # and of a playbook run matches ansible's.
+      - name: Install ansible
+        if: runner.os == 'Linux'
+        run: pipx install --include-deps ansible-core
+
+      - name: Integration tests
+        if: runner.os == 'Linux'
+        env:
+          PAVE_IT: '1'
+        run: go test -count=1 ./...
+
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Cross-compile
+        run: make dist
+      - uses: actions/upload-artifact@v7
+        with:
+          name: pave-binaries
+          path: dist/

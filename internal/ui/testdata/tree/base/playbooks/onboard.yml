@@ -1,0 +1,5 @@
+---
+# Onboard a host onto the SSH user CA.
+
+- name: Install CA trust
+  hosts: all

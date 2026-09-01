@@ -1,0 +1,5 @@
+- import_playbook: k3s.yml
+- name: Reboot
+  hosts:
+    - kubemasters
+    - kubeworkers

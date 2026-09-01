@@ -1,0 +1,77 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+      - run: go vet ./...
+      - run: go test -race ./...
+      - name: Install ansible
+        run: pipx install --include-deps ansible-core
+      - env:
+          PAVE_IT: '1'
+        run: go test -count=1 ./...
+
+  release:
+    needs: test
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Cross-compile
+        run: |
+          VERSION="${GITHUB_REF#refs/tags/}"
+          COMMIT="$(git rev-parse --short HEAD)"
+          LDFLAGS="-s -w -X github.com/mnorrsken/pave/internal/version.Version=$VERSION -X github.com/mnorrsken/pave/internal/version.Commit=$COMMIT"
+          mkdir -p dist
+          for target in linux/amd64 linux/arm64 darwin/amd64 darwin/arm64; do
+            os="${target%/*}"; arch="${target#*/}"
+            CGO_ENABLED=0 GOOS="$os" GOARCH="$arch" go build -trimpath \
+              -ldflags "$LDFLAGS" -o "dist/pave_${VERSION#v}_${os}_${arch}" ./cmd/pave
+          done
+          cd dist && sha256sum pave_* > checksums.txt
+
+      - name: Release notes from the changelog
+        run: |
+          VERSION_NO_V="${GITHUB_REF#refs/tags/v}"
+          awk -v v="$VERSION_NO_V" '
+            $0 ~ "^## \\[" v "\\]" { found = 1; next }
+            found && /^## /        { exit }
+            found                  { print }
+          ' CHANGELOG.md > notes.md
+          [ -s notes.md ] || { echo "No CHANGELOG section for $VERSION_NO_V" >&2; exit 1; }
+          cat >> notes.md <<'EOF'
+
+          ## Install
+
+          ```sh
+          go install github.com/mnorrsken/pave/cmd/pave@latest
+          ```
+
+          Or download the binary for your platform, check it and put it on your PATH:
+
+          ```sh
+          sha256sum -c checksums.txt --ignore-missing
+          chmod +x pave_*
+          ```
+          EOF
+
+      - name: Create the release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release create "${GITHUB_REF#refs/tags/}" --title "Release ${GITHUB_REF#refs/tags/}" --notes-file notes.md dist/*
