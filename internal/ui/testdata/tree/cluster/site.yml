@@ -1,2 +1,11 @@
+---
+# Bring the cluster up to date.
 - name: Cluster
-  hosts: kubenodes
+  hosts: kubemasters
+  serial: 1
+  roles:
+    - k3s
+  tasks:
+    - name: Reboot
+      ansible.builtin.reboot:
+      tags: [reboot]

@@ -140,3 +140,36 @@ func project(t *testing.T, projects []Project, name string) Project {
 	t.Fatalf("no project %q", name)
 	return Project{}
 }
+
+// What a play does, for the detail pane: the roles it applies, the modules
+// its own tasks call, the tags it can be run with, and how it runs.
+func TestDescribePlayContents(t *testing.T) {
+	m, err := Describe("testdata/tree/cluster/site.yml")
+	if err != nil {
+		t.Fatalf("describe: %v", err)
+	}
+	p := m.Plays[1]
+
+	if got, want := strings.Join(p.Roles, ","), "prereq,k3s-reboot"; got != want {
+		t.Errorf("roles = %q, want %q", got, want)
+	}
+	// Every section counts, a block is descended into rather than counted,
+	// and ansible.builtin is not worth the width.
+	if got, want := strings.Join(p.Modules, ","), "apt,debug,kubernetes.core.k8s_drain,reboot,service"; got != want {
+		t.Errorf("modules = %q, want %q", got, want)
+	}
+	if p.Tasks != 5 {
+		t.Errorf("tasks = %d, want 5", p.Tasks)
+	}
+	if got, want := strings.Join(p.Tags, ","), "drain,reboot"; got != want {
+		t.Errorf("tags = %q, want %q", got, want)
+	}
+	if !p.Become || p.Serial != "2" {
+		t.Errorf("become = %v, serial = %q", p.Become, p.Serial)
+	}
+
+	// An import_playbook entry has none of it.
+	if imported := m.Plays[0]; imported.Tasks != 0 || len(imported.Roles) != 0 {
+		t.Errorf("the import play = %+v", imported)
+	}
+}

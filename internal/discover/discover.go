@@ -210,6 +210,24 @@ type Play struct {
 	Hosts string
 	// Import is set instead of Hosts when the entry is an import_playbook.
 	Import string
+	// Become is whether the play escalates privilege for everything in it.
+	Become bool
+	// Serial is the play's batch size as written, empty when the play runs
+	// against every host at once.
+	Serial string
+	// Roles are the roles the play applies, in the order it applies them.
+	Roles []string
+	// Modules are the distinct modules the play's own tasks call, sorted and
+	// without the ansible.builtin prefix. What a role does is not in here:
+	// that is a different file.
+	Modules []string
+	// Tasks is how many tasks the play holds, counting pre_tasks, tasks,
+	// post_tasks and handlers, and the contents of blocks.
+	Tasks int
+	// Tags are the tags written on the play and on its tasks, sorted. They
+	// are what the tags and skip tags fields of the run form can be filled
+	// with.
+	Tags []string
 }
 
 // Meta is what the detail pane shows about a playbook: its leading comment
@@ -232,15 +250,168 @@ func Describe(path string) (Meta, error) {
 		return m, fmt.Errorf("parse %s: %w", filepath.Base(path), err)
 	}
 	for _, p := range plays {
-		play := Play{Name: str(p["name"]), Hosts: str(p["hosts"])}
-		for _, key := range []string{"import_playbook", "include_playbook", "ansible.builtin.import_playbook"} {
-			if v, ok := p[key]; ok {
-				play.Import = str(v)
-			}
-		}
-		m.Plays = append(m.Plays, play)
+		m.Plays = append(m.Plays, describePlay(p))
 	}
 	return m, nil
+}
+
+func describePlay(p map[string]any) Play {
+	play := Play{
+		Name:   str(p["name"]),
+		Hosts:  str(p["hosts"]),
+		Become: truthy(p["become"]),
+		Serial: str(p["serial"]),
+		Roles:  roleNames(p["roles"]),
+	}
+	for _, key := range []string{"import_playbook", "include_playbook", "ansible.builtin.import_playbook"} {
+		if v, ok := p[key]; ok {
+			play.Import = str(v)
+		}
+	}
+
+	modules := map[string]bool{}
+	tags := map[string]bool{}
+	for _, t := range strList(p["tags"]) {
+		tags[t] = true
+	}
+	for _, section := range []string{"pre_tasks", "tasks", "post_tasks", "handlers"} {
+		walkTasks(p[section], modules, tags, &play.Tasks)
+	}
+	play.Modules = sortedKeys(modules)
+	play.Tags = sortedKeys(tags)
+	return play
+}
+
+// walkTasks counts the tasks of one section and collects what they call and
+// what they are tagged with. A block is not a task itself, so it is descended
+// into rather than counted.
+func walkTasks(v any, modules, tags map[string]bool, count *int) {
+	list, ok := v.([]any)
+	if !ok {
+		return
+	}
+	for _, e := range list {
+		task, ok := e.(map[string]any)
+		if !ok {
+			continue
+		}
+		for _, t := range strList(task["tags"]) {
+			tags[t] = true
+		}
+		if _, isBlock := task["block"]; isBlock {
+			for _, section := range []string{"block", "rescue", "always"} {
+				walkTasks(task[section], modules, tags, count)
+			}
+			continue
+		}
+		*count++
+		for key := range task {
+			if name := moduleName(key); name != "" {
+				modules[name] = true
+			}
+		}
+	}
+}
+
+// taskKeywords are the keys a task may carry that are not the module it
+// calls. Anything else on a task is the module, which is how ansible itself
+// reads a task, and is what keeps this working for collections nobody here
+// has ever heard of.
+var taskKeywords = map[string]bool{
+	"action": true, "any_errors_fatal": true, "args": true, "async": true,
+	"become": true, "become_exe": true, "become_flags": true, "become_method": true,
+	"become_user": true, "changed_when": true, "check_mode": true, "collections": true,
+	"connection": true, "debugger": true, "delay": true, "delegate_facts": true,
+	"delegate_to": true, "diff": true, "environment": true, "failed_when": true,
+	"ignore_errors": true, "ignore_unreachable": true, "listen": true, "local_action": true,
+	"loop": true, "loop_control": true, "module_defaults": true, "name": true,
+	"no_log": true, "notify": true, "poll": true, "port": true, "register": true,
+	"remote_user": true, "retries": true, "run_once": true, "tags": true,
+	"throttle": true, "timeout": true, "until": true, "vars": true, "when": true,
+}
+
+// moduleName is the module a task key names, or "" when the key is one of the
+// keywords every task may carry. The ansible.builtin prefix is dropped: the
+// point of the line is which kind of work the play does, and "apt" says that
+// better than "ansible.builtin.apt".
+func moduleName(key string) string {
+	if taskKeywords[key] || strings.HasPrefix(key, "with_") {
+		return ""
+	}
+	for _, prefix := range []string{"ansible.builtin.", "ansible.legacy."} {
+		if strings.HasPrefix(key, prefix) {
+			return strings.TrimPrefix(key, prefix)
+		}
+	}
+	return key
+}
+
+// roleNames reads a roles: list, where an entry is either the name or a map
+// with the name under "role" or "name".
+func roleNames(v any) []string {
+	list, ok := v.([]any)
+	if !ok {
+		return nil
+	}
+	var out []string
+	for _, e := range list {
+		switch t := e.(type) {
+		case string:
+			out = append(out, t)
+		case map[string]any:
+			name := str(t["role"])
+			if name == "" {
+				name = str(t["name"])
+			}
+			if name != "" {
+				out = append(out, name)
+			}
+		}
+	}
+	return out
+}
+
+// strList is a scalar or a list of them as a slice of strings.
+func strList(v any) []string {
+	if list, ok := v.([]any); ok {
+		var out []string
+		for _, e := range list {
+			if s := str(e); s != "" {
+				out = append(out, s)
+			}
+		}
+		return out
+	}
+	if s := str(v); s != "" {
+		return []string{s}
+	}
+	return nil
+}
+
+func sortedKeys(m map[string]bool) []string {
+	if len(m) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// truthy reads the several spellings of yes a playbook may use.
+func truthy(v any) bool {
+	switch t := v.(type) {
+	case bool:
+		return t
+	case string:
+		switch strings.ToLower(t) {
+		case "yes", "true", "on", "1":
+			return true
+		}
+	}
+	return false
 }
 
 // leadingComment returns the comment block at the top of the file, with the

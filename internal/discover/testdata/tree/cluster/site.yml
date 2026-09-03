@@ -3,3 +3,31 @@
   hosts:
     - kubemasters
     - kubeworkers
+  become: true
+  serial: 2
+  tags: [reboot]
+  roles:
+    - prereq
+    - role: k3s-reboot
+  pre_tasks:
+    - name: Drain
+      kubernetes.core.k8s_drain:
+        state: drain
+      tags: [drain]
+  tasks:
+    - name: Patch and reboot
+      block:
+        - name: Patch
+          ansible.builtin.apt:
+            upgrade: dist
+        - name: Reboot
+          ansible.builtin.reboot:
+      rescue:
+        - name: Say so
+          ansible.builtin.debug:
+            msg: it did not come back
+  handlers:
+    - name: Restart k3s
+      ansible.builtin.service:
+        name: k3s
+        state: restarted

@@ -177,13 +177,11 @@ func testInventory() *inv.Inventory {
 // harness is an App running on a simulation screen, with everything that
 // would touch the system replaced.
 type harness struct {
-	t      *testing.T
-	app    *App
-	screen tcell.SimulationScreen
-	runner *fakeRunner
-	cert   sshcert.Status
-	// invErr makes the inventory loader fail.
-	invErr  error
+	t       *testing.T
+	app     *App
+	screen  tcell.SimulationScreen
+	runner  *fakeRunner
+	cert    sshcert.Status
 	stopped chan struct{}
 }
 
@@ -207,9 +205,6 @@ func newHarness(t *testing.T, tweak ...func(*Options)) *harness {
 		Screen: screen,
 		Runner: h.runner,
 		Inventory: func(context.Context, inv.Source) (*inv.Inventory, error) {
-			if h.invErr != nil {
-				return nil, h.invErr
-			}
 			return testInventory(), nil
 		},
 		Cert: func(string) (sshcert.Status, error) { return h.cert, nil },
@@ -281,6 +276,15 @@ func (h *harness) waitWithin(limit time.Duration, what string, cond func() bool)
 		time.Sleep(3 * time.Millisecond)
 	}
 	h.t.Fatalf("timed out after %s waiting for %s", limit, what)
+}
+
+// runNow starts a run the way a user does: F5 opens the options, F5 in the
+// dialog runs what they describe.
+func (h *harness) runNow() {
+	h.t.Helper()
+	h.key(tcell.KeyF5)
+	h.waitFor("the run options", func() bool { return h.app.optionsFront() })
+	h.key(tcell.KeyF5)
 }
 
 func (h *harness) press(r rune) {

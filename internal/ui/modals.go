@@ -103,15 +103,22 @@ func helpView(onClose func()) tview.Primitive {
 const helpText = `
   [::b]browsing[-::-]
     up/down        move
-    enter          on a playbook: fill in the run form
+    enter          on a playbook: the run options
     /              filter the tree
     r              rescan the root for projects and playbooks
-    tab            move between the tree, the form and the output
+    tab            move between the tree, the playbook and the output
+
+  The pane on the right is what the playbook would do: every play, the hosts
+  its pattern resolves to in the project's inventory, the roles it applies and
+  the modules its own tasks call. The inventory is read in the background the
+  first time a project is selected.
 
   [::b]running[-::-]
-    F5             run the playbook with the options in the form
+    F5             the run options for the selected playbook
+    F5 again       run it with what they say
     F2 or L        pick the limit out of the inventory
     F3             credentials for a host that has no certificate yet
+    esc            close the options without running anything
     i              reload the inventory of the selected project
     ctrl-c         interrupt the run (a second one kills it)
     s              save the output of a finished run to a file

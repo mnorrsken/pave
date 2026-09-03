@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"context"
 	"errors"
 	"os"
 	"os/exec"
@@ -12,6 +13,7 @@ import (
 	"github.com/gdamore/tcell/v2"
 
 	"github.com/mnorrsken/pave/internal/config"
+	"github.com/mnorrsken/pave/internal/inv"
 	"github.com/mnorrsken/pave/internal/run"
 	"github.com/mnorrsken/pave/internal/sshcert"
 )
@@ -66,9 +68,9 @@ func TestDetailAndPreviewFollowTheSelection(t *testing.T) {
 func TestRunUsesTheFormOptions(t *testing.T) {
 	h := newHarness(t)
 
-	// Enter moves from the tree into the form, where space ticks check mode.
+	// Enter opens the run options, where space ticks check mode.
 	h.key(tcell.KeyEnter)
-	h.waitFor("the form to take focus", func() bool { return h.app.form.HasFocus() })
+	h.waitFor("the options dialog", func() bool { return h.app.optionsFront() && h.app.form.HasFocus() })
 	h.press(' ')
 	h.waitFor("check mode to be on", func() bool { return h.app.form.checkbox(fieldCheck).IsChecked() })
 
@@ -77,7 +79,7 @@ func TestRunUsesTheFormOptions(t *testing.T) {
 		h.app.form.setLimit("kubeworkers")
 	})
 
-	h.key(tcell.KeyF5)
+	h.runNow()
 	h.waitFor("the run to start", func() bool { return h.runner.count() == 1 })
 
 	cmd := h.runner.lastCmd()
@@ -95,7 +97,7 @@ func TestRunUsesTheFormOptions(t *testing.T) {
 
 func TestOutputStreamsAndTypingReachesAnsible(t *testing.T) {
 	h := newHarness(t)
-	h.key(tcell.KeyF5)
+	h.runNow()
 	h.waitFor("the run to start", func() bool { return h.runner.count() == 1 })
 	sess := h.runner.session(t, 0)
 
@@ -123,7 +125,7 @@ func TestOutputStreamsAndTypingReachesAnsible(t *testing.T) {
 
 func TestFailedRunSaysSo(t *testing.T) {
 	h := newHarness(t)
-	h.key(tcell.KeyF5)
+	h.runNow()
 	h.waitFor("the run to start", func() bool { return h.runner.count() == 1 })
 
 	h.runner.session(t, 0).finish(errors.New("boom"))
@@ -134,7 +136,7 @@ func TestFailedRunSaysSo(t *testing.T) {
 
 func TestCtrlCInterruptsThenKills(t *testing.T) {
 	h := newHarness(t)
-	h.key(tcell.KeyF5)
+	h.runNow()
 	h.waitFor("the run to start", func() bool { return h.runner.count() == 1 })
 	sess := h.runner.session(t, 0)
 
@@ -177,8 +179,17 @@ func TestHostPickerFillsTheLimit(t *testing.T) {
 }
 
 func TestInventoryFailureIsReported(t *testing.T) {
-	h := newHarness(t)
-	h.invErr = errors.New("no age key")
+	h := newHarness(t, func(o *Options) {
+		o.Inventory = func(context.Context, inv.Source) (*inv.Inventory, error) {
+			return nil, errors.New("no age key")
+		}
+	})
+
+	// The detail pane reads it in the background and says so rather than
+	// pretending the play targets nothing.
+	h.waitFor("the pane to say why it cannot tell", func() bool {
+		return strings.Contains(h.app.detail.GetText(true), "no inventory: no age key")
+	})
 
 	h.press('L')
 	h.waitFor("the error", func() bool { return strings.Contains(h.app.status.text(), "no age key") })
@@ -191,7 +202,7 @@ func TestCredentialsBecomePasswordFiles(t *testing.T) {
 		h.app.form.setCredentials(credentials{User: "pi", Password: "s3cret", Become: "sud0", Target: "10.0.0.9"})
 	})
 
-	h.key(tcell.KeyF5)
+	h.runNow()
 	h.waitFor("the run to start", func() bool { return h.runner.count() == 1 })
 
 	args := h.runner.lastCmd().Args
@@ -310,7 +321,7 @@ func TestSigningRunsSshKeygen(t *testing.T) {
 
 func TestQuitDuringARunAsksFirst(t *testing.T) {
 	h := newHarness(t)
-	h.key(tcell.KeyF5)
+	h.runNow()
 	h.waitFor("the run to start", func() bool { return h.runner.count() == 1 })
 
 	// While the output pane has the keyboard everything typed goes to the
@@ -328,7 +339,7 @@ func TestQuitDuringARunAsksFirst(t *testing.T) {
 
 func TestSaveLogWritesTheOutput(t *testing.T) {
 	h := newHarness(t)
-	h.key(tcell.KeyF5)
+	h.runNow()
 	h.waitFor("the run to start", func() bool { return h.runner.count() == 1 })
 
 	sess := h.runner.session(t, 0)
@@ -433,7 +444,7 @@ func TestRealRunnerStreamsColouredOutput(t *testing.T) {
 		o.Config.AnsiblePlaybookBin = script
 	})
 
-	h.key(tcell.KeyF5)
+	h.runNow()
 	h.waitFor("the run to start", func() bool { return h.app.running })
 	h.waitFor("the run to finish", func() bool { return !h.app.running })
 
@@ -461,7 +472,7 @@ func TestRealAnsibleSyntaxCheck(t *testing.T) {
 	h := newHarness(t, func(o *Options) { o.Runner = run.PTYRunner{} })
 	h.inspect(func() { h.app.form.input(fieldExtraArgs).SetText("--syntax-check") })
 
-	h.key(tcell.KeyF5)
+	h.runNow()
 	h.waitFor("the syntax check to start", func() bool { return h.app.running })
 	// ansible is python: on a cold runner it takes seconds to get going.
 	h.waitWithin(2*time.Minute, "the syntax check to finish", func() bool { return !h.app.running })
@@ -486,8 +497,8 @@ func TestBackspaceEditsTheFormRatherThanOpeningAPicker(t *testing.T) {
 	h.waitFor("the text", func() bool { return h.app.form.limit() == "kubeworkers" })
 	h.key(tcell.KeyBackspace2)
 	h.waitFor("the last character to go", func() bool { return h.app.form.limit() == "kubeworker" })
-	if h.app.modalOpen() {
-		t.Error("backspace opened a dialog")
+	if !h.app.optionsFront() {
+		t.Error("backspace opened something on top of the options")
 	}
 
 	// F2 is the one that opens the picker from inside the form.
@@ -501,17 +512,21 @@ func TestBackspaceEditsTheFormRatherThanOpeningAPicker(t *testing.T) {
 // both have already left the pane looking empty.
 func TestTheWholeFormIsDrawn(t *testing.T) {
 	h := newHarness(t)
+	h.key(tcell.KeyF5)
+	h.waitFor("the options dialog", func() bool { return h.app.optionsFront() })
 	h.sync()
 	screen := h.screenText()
 
-	for _, want := range []string{"check mode", "extra args", "run", "hosts…", "credentials…", markOff} {
+	for _, want := range []string{"check mode", "extra args", "run", "hosts…", "credentials…", "cancel", markOff} {
 		if !strings.Contains(screen, want) {
 			t.Errorf("the screen does not show %q:\n%s", want, screen)
 		}
 	}
 	// The tree markers are drawn through tview's tag parser, so they must not
-	// look like colour tags either.
-	if !strings.Contains(screen, iconProject+" base") {
+	// look like colour tags either. They are behind the dialog, on the left.
+	h.key(tcell.KeyEscape)
+	h.waitFor("the dialog to close", func() bool { return !h.app.modalOpen() })
+	if screen := h.screenText(); !strings.Contains(screen, iconProject+" base") {
 		t.Errorf("the project marker is missing:\n%s", screen)
 	}
 }
@@ -524,4 +539,72 @@ func TestPickerShowsWhatIsSelected(t *testing.T) {
 	h.waitFor("the mark to be drawn", func() bool {
 		return strings.Contains(h.screenText(), markOn+" kubemasters")
 	})
+}
+
+// The right pane is what the tool is for: which machines a play reaches, and
+// what it does to them, before anything is run.
+func TestDetailSaysWhatThePlayTouches(t *testing.T) {
+	h := newHarness(t)
+
+	// Past the other project's playbooks and its node to the one wanted.
+	onSite := func() bool {
+		pb := h.app.tree.currentPlaybook()
+		return pb != nil && strings.Contains(pb.Rel, "site")
+	}
+	for i := 0; i < 6; i++ {
+		var there bool
+		h.inspect(func() { there = onSite() })
+		if there {
+			break
+		}
+		h.key(tcell.KeyDown)
+		h.sync()
+	}
+	h.waitFor("the cluster playbook", onSite)
+	// The inventory is read in the background, so the affects line arrives a
+	// moment after the rest of the pane.
+	h.waitFor("the inventory to be resolved", func() bool {
+		return strings.Contains(h.app.detail.GetText(true), "affects")
+	})
+
+	detail := h.app.detail.GetText(true)
+	for _, want := range []string{
+		"Bring the cluster up to date.",
+		"1 play · 2 hosts in total",
+		"hosts    kubemasters",
+		"affects  2 hosts: master1, master2",
+		"roles    k3s",
+		"tasks    1 task: reboot",
+		"tags     reboot",
+		"runs     serial 1",
+	} {
+		if !strings.Contains(detail, want) {
+			t.Errorf("the pane does not say %q:\n%s", want, detail)
+		}
+	}
+}
+
+// The options are asked for before a run rather than sitting in the layout,
+// and cancelling one runs nothing.
+func TestTheOptionsAreADialog(t *testing.T) {
+	h := newHarness(t)
+	h.sync()
+	if strings.Contains(h.screenText(), "check mode") {
+		t.Error("the options are drawn without being asked for")
+	}
+
+	h.key(tcell.KeyF5)
+	h.waitFor("the dialog", func() bool { return h.app.optionsFront() })
+	h.waitFor("the command it would run", func() bool {
+		return strings.Contains(h.screenText(), "ansible-playbook playbooks/onboard.yml")
+	})
+
+	h.key(tcell.KeyEscape)
+	h.waitFor("the dialog to close", func() bool { return !h.app.modalOpen() })
+	if strings.Contains(h.screenText(), "check mode") {
+		t.Error("the options are still drawn after cancelling")
+	}
+	if h.runner.count() != 0 {
+		t.Errorf("cancelling started %d runs", h.runner.count())
+	}
 }

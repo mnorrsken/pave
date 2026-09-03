@@ -1,9 +1,10 @@
 # pave
 
 Terminal front end for running ansible playbooks, in Go on tview/tcell:
-project/playbook tree on the left, playbook detail and the run options on the
-right, the run itself streaming into an output pane. One static binary for
-linux and darwin.
+project/playbook tree on the left, what the playbook would do on the right
+(plays, the hosts they resolve to, roles, modules), the run options in a
+dialog opened just before a run, the run itself streaming into an output pane.
+One static binary for linux and darwin.
 
 ## Commands
 
@@ -50,6 +51,10 @@ for any UI change.
   do not swap the order. The same goes for anything else drawn through tview:
   the tree markers and the checkbox strings in `theme.go` have no brackets in
   them for exactly this reason.
+- **Never queue onto the main loop from the main loop.** `QueueUpdate` blocks
+  until the update has run, so calling `a.queue` from a draw callback or a key
+  handler deadlocks tview. `reflowDetail` runs in `SetAfterDrawFunc`: it sets
+  the text itself and asks for the redraw from a goroutine.
 - **Size a form box with `formBoxHeight`.** tview draws a form's buttons on a
   row below its items with a blank one in between, and its default border
   padding adds two more; get it wrong and the buttons are simply not there,

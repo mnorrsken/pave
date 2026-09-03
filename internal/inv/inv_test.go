@@ -95,3 +95,45 @@ func findGroup(t *testing.T, in *Inventory, name string) Group {
 	t.Fatalf("no group %q", name)
 	return Group{}
 }
+
+func TestResolve(t *testing.T) {
+	in := &Inventory{
+		Groups: []Group{
+			{Name: "kubemasters", Hosts: []string{"master1", "master2"}},
+			{Name: "kubenodes", Hosts: []string{"master1", "master2", "worker1"}},
+			{Name: "kubeworkers", Hosts: []string{"worker1"}},
+			{Name: "proxmox_hosts", Hosts: []string{"pve1", "store1"}},
+		},
+		Hosts: []string{"master1", "master2", "pve1", "store1", "worker1"},
+	}
+
+	tests := []struct {
+		pattern string
+		want    string
+	}{
+		{"all", "master1,master2,pve1,store1,worker1"},
+		{"*", "master1,master2,pve1,store1,worker1"},
+		{"kubenodes", "master1,master2,worker1"},
+		{"worker1", "worker1"},
+		// A list in the playbook arrives here comma separated.
+		{"kubeworkers,proxmox_hosts", "pve1,store1,worker1"},
+		{"kubenodes:!kubeworkers", "master1,master2"},
+		{"all:&kubemasters", "master1,master2"},
+		{"kube*", "master1,master2,worker1"},
+		{"store?", "store1"},
+		// An implicit localhost is not in any inventory but is still where
+		// a guard play runs.
+		{"localhost", "localhost"},
+		{"nothing_by_that_name", ""},
+		{"", ""},
+	}
+	for _, tt := range tests {
+		if got := strings.Join(in.Resolve(tt.pattern), ","); got != tt.want {
+			t.Errorf("Resolve(%q) = %q, want %q", tt.pattern, got, tt.want)
+		}
+	}
+
+	if got := (*Inventory)(nil).Resolve("all"); got != nil {
+		t.Errorf("Resolve on no inventory = %v", got)
+	}
+}

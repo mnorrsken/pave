@@ -27,6 +27,10 @@ const inventoryTimeout = 90 * time.Second
 // the output is what deserves the room.
 const treeWidth = 34
 
+// optionsWidth is the width of the run options dialog. The extra args field
+// holds a command line, so it wants the room.
+const optionsWidth = 76
+
 // Options are the App's dependencies. Everything that reaches outside the
 // process is a function here, so a test can drive the whole interface with no
 // ansible, no inventory and no ssh-agent.
@@ -63,11 +67,18 @@ type App struct {
 	body    *tview.Pages
 	tree    *playbookTree
 	detail  *tview.TextView
-	form    *runForm
 	preview *tview.TextView
 	output  *outputPane
 	status  *statusBar
 	filter  *tview.InputField
+
+	// form is the run options. It lives in a dialog rather than in the
+	// layout: the options belong to the run about to be started, not to the
+	// playbook being read about.
+	form         *runForm
+	formPreview  *tview.TextView
+	runOptions   tview.Primitive
+	optionsModal string
 
 	// modals is the stack of open dialogs. While it is not empty the global
 	// keys stand down so the dialog owns the keyboard.
@@ -76,9 +87,13 @@ type App struct {
 
 	projects []discover.Project
 	// invCache holds one inventory per project directory; reading one is slow
-	// enough to be worth not repeating.
-	invCache map[string]*inv.Inventory
-	cert     sshcert.Status
+	// enough to be worth not repeating. invLoading and invErrs are the other
+	// two states the detail pane draws: a read in flight, and one that failed
+	// and is not worth starting again on its own.
+	invCache   map[string]*inv.Inventory
+	invLoading map[string]bool
+	invErrs    map[string]error
+	cert       sshcert.Status
 
 	// session is the command currently running, and running says whether the
 	// keyboard belongs to it.
@@ -90,6 +105,10 @@ type App struct {
 	// sessionRows and sessionCols are the size the running command was last
 	// told about.
 	sessionRows, sessionCols int
+
+	// detailDrawnAt is the width the detail pane was last laid out for, so a
+	// resize can lay it out again.
+	detailDrawnAt int
 
 	filtering bool
 	done      chan struct{}
@@ -123,6 +142,8 @@ func New(opts Options) *App {
 		Application: tview.NewApplication(),
 		opts:        opts,
 		invCache:    map[string]*inv.Inventory{},
+		invLoading:  map[string]bool{},
+		invErrs:     map[string]error{},
 		done:        make(chan struct{}),
 	}
 
@@ -136,11 +157,16 @@ func New(opts Options) *App {
 	a.detail.SetBackgroundColor(colorBackground)
 	a.detail.SetBorder(true).SetBorderColor(colorBorder).SetTitleColor(colorTitle).SetTitle(" playbook ")
 
-	a.form = newRunForm(opts.Config.Defaults, a.runSelected, a.openHostPicker, a.openCredentials)
+	a.form = newRunForm(opts.Config.Defaults, a.runSelected, a.openHostPicker, a.openCredentials, a.closeRunOptions)
 	a.form.changed = a.renderPreview
 
 	a.preview = tview.NewTextView().SetDynamicColors(true).SetWrap(true)
 	a.preview.SetBackgroundColor(colorBackground)
+	a.preview.SetBorder(true).SetBorderColor(colorBorder).SetTitleColor(colorTitle).SetTitle(" command ")
+
+	a.formPreview = tview.NewTextView().SetDynamicColors(true).SetWrap(true)
+	a.formPreview.SetBackgroundColor(colorBackground)
+	a.runOptions = center(runOptionsBox(a.form, a.formPreview), optionsWidth, runOptionsHeight)
 
 	a.output = newOutputPane()
 	a.status = newStatusBar()
@@ -159,8 +185,7 @@ func New(opts Options) *App {
 
 	right := tview.NewFlex().SetDirection(tview.FlexRow).
 		AddItem(a.detail, 0, 1, false).
-		AddItem(a.form, formHeight, 0, false).
-		AddItem(a.preview, 3, 0, false)
+		AddItem(a.preview, previewRows, 0, false)
 
 	browse := tview.NewFlex().
 		AddItem(a.tree, treeWidth, 0, true).
@@ -177,7 +202,10 @@ func New(opts Options) *App {
 
 	a.pages = tview.NewPages().AddPage("main", main, true, true)
 	a.SetRoot(a.pages, true).SetInputCapture(a.globalKeys)
-	a.SetAfterDrawFunc(func(tcell.Screen) { a.resizeSession() })
+	a.SetAfterDrawFunc(func(tcell.Screen) {
+		a.resizeSession()
+		a.reflowDetail()
+	})
 	a.SetFocus(a.tree)
 
 	a.rescan()
@@ -259,32 +287,28 @@ func (a *App) selectionChanged(ref *treeRef) {
 		a.renderPreview()
 		return
 	}
+	// The inventory is what the affects lines are made of, and it is only
+	// ever read once per project.
+	a.ensureInventory(ref.project)
+
 	pb := ref.playbook
 	a.detail.SetTitle(" " + filepath.ToSlash(pb.Rel) + " ")
-
-	var b strings.Builder
 	meta, err := discover.Describe(pb.Path)
-	if err != nil {
-		fmt.Fprintf(&b, "[%s]%s[-]\n\n", tag(colorError), tview.Escape(err.Error()))
-	}
-	if meta.Comment != "" {
-		fmt.Fprintf(&b, "%s\n\n", tview.Escape(meta.Comment))
-	}
-	for _, play := range meta.Plays {
-		switch {
-		case play.Import != "":
-			fmt.Fprintf(&b, "[%s]import[-]  %s\n", tag(colorDim), tview.Escape(play.Import))
-		default:
-			name := play.Name
-			if name == "" {
-				name = "(unnamed play)"
-			}
-			fmt.Fprintf(&b, "[%s]%-8s[-] %s\n", tag(colorAccent), tview.Escape(play.Hosts), tview.Escape(name))
-		}
-	}
-	a.detail.SetText(b.String())
+	a.detail.SetText(playbookDetail(meta, err, a.invState(ref.project), a.detailWidth()))
 	a.detail.ScrollToBeginning()
 	a.renderPreview()
+}
+
+// refreshDetail redraws the pane for whatever is selected, after something it
+// depends on has changed underneath it.
+func (a *App) refreshDetail() { a.selectionChanged(a.tree.current()) }
+
+// invState is what is known about a project's inventory right now.
+func (a *App) invState(p *discover.Project) invState {
+	if p == nil {
+		return invState{}
+	}
+	return invState{in: a.invCache[p.Dir], err: a.invErrs[p.Dir], loading: a.invLoading[p.Dir]}
 }
 
 // currentSpec is the run the form and the tree currently describe. ok is
@@ -308,6 +332,7 @@ func (a *App) renderPreview() {
 	spec, ok := a.currentSpec()
 	if !ok {
 		a.preview.SetText("")
+		a.formPreview.SetText("")
 		return
 	}
 	// The password files do not exist yet, but the line should say that they
@@ -324,6 +349,7 @@ func (a *App) renderPreview() {
 		text += fmt.Sprintf("\n[%s]%s[-]", tag(colorWarn), tview.Escape(s))
 	}
 	a.preview.SetText(text)
+	a.formPreview.SetText(text)
 }
 
 // --- running ----------------------------------------------------------------
@@ -370,6 +396,7 @@ func (a *App) runSelected() {
 		}
 	}
 
+	a.closeRunOptions()
 	a.lastRun = spec.Playbook
 	a.start(spec.Playbook, []step{{
 		label: spec.Preview(),
@@ -481,6 +508,20 @@ func (a *App) stream(sess run.Session) error {
 	return err
 }
 
+// reflowDetail lays the detail pane out again once the terminal has told it
+// how wide it is. It runs from the draw, which is the main loop, so the text
+// is set here and only the redraw is asked for from off it: queueing anything
+// on the main loop itself deadlocks tview.
+func (a *App) reflowDetail() {
+	w := a.detailWidth()
+	if w <= 0 || w == a.detailDrawnAt {
+		return
+	}
+	a.detailDrawnAt = w
+	a.refreshDetail()
+	go a.queue(func() {})
+}
+
 // resizeSession keeps the running command's idea of the terminal the same
 // size as the pane it is being drawn into, so ansible wraps its lines where
 // the user can see the wrap.
@@ -494,6 +535,14 @@ func (a *App) resizeSession() {
 	}
 	a.sessionRows, a.sessionCols = rows, cols
 	a.session.Resize(rows, cols)
+}
+
+// detailWidth is how much room the detail pane had at the last draw, which is
+// what its lines are laid out for. It is zero before the first draw, and
+// playbookDetail falls back to a sensible width then.
+func (a *App) detailWidth() int {
+	_, _, w, _ := a.detail.GetInnerRect()
+	return w
 }
 
 func (a *App) outputSize() (rows, cols int) {
@@ -604,6 +653,42 @@ func (a *App) openCredentials() {
 	), 74, formBoxHeight(5)))
 }
 
+// openRunOptions is the dialog every run goes through: the options are for
+// the run about to start, so they are asked for then rather than sitting in
+// the layout.
+func (a *App) openRunOptions() {
+	if a.running {
+		a.status.warn("a run is already going")
+		return
+	}
+	if a.tree.currentPlaybook() == nil {
+		a.status.warn("select a playbook first")
+		return
+	}
+	if a.optionsModal != "" {
+		return
+	}
+	a.renderPreview()
+	a.optionsModal = a.openModal(a.runOptions)
+	a.SetFocus(a.form)
+	a.refreshHints()
+}
+
+func (a *App) closeRunOptions() {
+	if a.optionsModal == "" {
+		return
+	}
+	name := a.optionsModal
+	a.optionsModal = ""
+	a.closeModal(name)
+}
+
+// optionsFront reports whether the run options are the dialog on top, which
+// is when their keys are live.
+func (a *App) optionsFront() bool {
+	return a.optionsModal != "" && len(a.modals) > 0 && a.modals[len(a.modals)-1] == a.optionsModal
+}
+
 // openHostPicker needs the inventory of the selected project, which is read
 // on first use.
 func (a *App) openHostPicker() {
@@ -664,16 +749,53 @@ func (a *App) inventory(p *discover.Project, reload bool) (*inv.Inventory, error
 	return in, nil
 }
 
+// ensureInventory reads a project's inventory in the background, once, so the
+// detail pane can say which hosts a play would reach without the tree going
+// unresponsive for as long as ansible-inventory takes. A read that fails is
+// not retried on its own: i is the way to ask again.
+func (a *App) ensureInventory(p *discover.Project) {
+	if p == nil || a.invCache[p.Dir] != nil || a.invLoading[p.Dir] || a.invErrs[p.Dir] != nil {
+		return
+	}
+	a.invLoading[p.Dir] = true
+	dir, name := p.Dir, p.Name
+	src := inv.Source{
+		Bin:        a.opts.Config.AnsibleInventoryBin,
+		Dir:        p.Dir,
+		ConfigFile: p.ConfigFile,
+		Env:        a.opts.Config.RunEnv(),
+	}
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), inventoryTimeout)
+		defer cancel()
+		in, err := a.opts.Inventory(ctx, src)
+		a.queue(func() {
+			delete(a.invLoading, dir)
+			if err != nil {
+				a.invErrs[dir] = err
+				a.status.warn("inventory of %s: %v", name, err)
+			} else {
+				a.invCache[dir] = in
+			}
+			a.refreshDetail()
+		})
+	}()
+}
+
 func (a *App) reloadInventory() {
 	ref := a.tree.current()
 	if ref == nil {
 		return
 	}
+	delete(a.invErrs, ref.project.Dir)
 	in, err := a.inventory(ref.project, true)
 	if err != nil {
+		a.invErrs[ref.project.Dir] = err
+		a.refreshDetail()
 		a.showError("inventory", err)
 		return
 	}
+	a.refreshDetail()
 	a.status.ok("%s: %d hosts in %d groups", ref.project.Name, len(in.Hosts), len(in.Groups))
 }
 
@@ -792,7 +914,17 @@ func (a *App) closeFilter() {
 // --- keys -------------------------------------------------------------------
 
 func (a *App) globalKeys(ev *tcell.EventKey) *tcell.EventKey {
-	if a.modalOpen() || a.filtering {
+	if a.filtering {
+		return ev
+	}
+	// The run options own the keyboard while they are the dialog on top: a
+	// letter there is something being typed, not a command. tview delivers a
+	// key straight to the focused field, so the dialog's own keys have to be
+	// caught here rather than on the form.
+	if a.optionsFront() {
+		return a.optionsKeys(ev)
+	}
+	if a.modalOpen() {
 		return ev
 	}
 
@@ -805,27 +937,6 @@ func (a *App) globalKeys(ev *tcell.EventKey) *tcell.EventKey {
 	if ev.Key() == tcell.KeyCtrlC && a.running {
 		a.interrupt()
 		return nil
-	}
-
-	// Inside the run form the keyboard belongs to the form: a letter is
-	// something being typed, not a command.
-	if a.focusedOn(a.form) || isTextInput(a.GetFocus()) {
-		switch ev.Key() {
-		case tcell.KeyEscape:
-			a.SetFocus(a.tree)
-			a.refreshHints()
-			return nil
-		case tcell.KeyF5:
-			a.runSelected()
-			return nil
-		case tcell.KeyF2:
-			a.openHostPicker()
-			return nil
-		case tcell.KeyF3:
-			a.openCredentials()
-			return nil
-		}
-		return ev
 	}
 
 	switch ev.Key() {
@@ -845,14 +956,17 @@ func (a *App) globalKeys(ev *tcell.EventKey) *tcell.EventKey {
 	case tcell.KeyEnter:
 		if a.focusedOn(a.tree) {
 			if a.tree.currentPlaybook() != nil {
-				a.SetFocus(a.form)
-				a.refreshHints()
+				a.openRunOptions()
 				return nil
 			}
 			return ev // let the tree expand or collapse the node
 		}
+		if a.focusedOn(a.detail) {
+			a.openRunOptions()
+			return nil
+		}
 	case tcell.KeyF5:
-		a.runSelected()
+		a.openRunOptions()
 		return nil
 	case tcell.KeyF2:
 		a.openHostPicker()
@@ -880,7 +994,7 @@ func (a *App) globalKeys(ev *tcell.EventKey) *tcell.EventKey {
 			return nil
 		}
 	case 'i':
-		if a.focusedOn(a.tree) {
+		if a.focusedOn(a.tree) || a.focusedOn(a.detail) {
 			a.reloadInventory()
 			return nil
 		}
@@ -898,6 +1012,26 @@ func (a *App) globalKeys(ev *tcell.EventKey) *tcell.EventKey {
 			a.saveLog()
 			return nil
 		}
+	}
+	return ev
+}
+
+// optionsKeys are the run dialog's own: everything else is typing and goes to
+// the field that has the keyboard.
+func (a *App) optionsKeys(ev *tcell.EventKey) *tcell.EventKey {
+	switch ev.Key() {
+	case tcell.KeyEscape:
+		a.closeRunOptions()
+		return nil
+	case tcell.KeyF5:
+		a.runSelected()
+		return nil
+	case tcell.KeyF2:
+		a.openHostPicker()
+		return nil
+	case tcell.KeyF3:
+		a.openCredentials()
+		return nil
 	}
 	return ev
 }
@@ -981,15 +1115,12 @@ func (a *App) focusedOn(p tview.Primitive) bool {
 func (a *App) focusNext() {
 	switch {
 	case a.focusedOn(a.tree):
-		if a.body.HasPage("output") {
-			name, _ := a.body.GetFrontPage()
-			if name == "output" {
-				a.SetFocus(a.output)
-				break
-			}
+		if name, _ := a.body.GetFrontPage(); name == "output" {
+			a.SetFocus(a.output)
+			break
 		}
-		a.SetFocus(a.form)
-	case a.focusedOn(a.form):
+		a.SetFocus(a.detail)
+	case a.focusedOn(a.detail):
 		a.SetFocus(a.tree)
 	default:
 		a.SetFocus(a.tree)
@@ -999,6 +1130,8 @@ func (a *App) focusNext() {
 
 func (a *App) refreshHints() {
 	switch {
+	case a.optionsFront():
+		a.status.setKeys("[run options] F5 run · F2 hosts · F3 credentials · tab next field · esc cancel")
 	case a.modalOpen():
 		a.status.setKeys("esc close · tab move · enter accept")
 	case a.filtering:
@@ -1007,24 +1140,14 @@ func (a *App) refreshHints() {
 		a.status.setKeys("[run] what you type goes to ansible · ^C interrupt · pgup/pgdn scroll · esc leave it running")
 	case a.focusedOn(a.output):
 		a.status.setKeys("[output] esc back · s save · pgup/pgdn scroll · ? help")
-	case a.focusedOn(a.form):
-		a.status.setKeys("[options] F5 run · F2 hosts · F3 credentials · tab next field · esc back to the tree")
+	case a.focusedOn(a.detail):
+		a.status.setKeys("[playbook] up/down scroll · enter run it · i reload the inventory · tab back to the tree")
 	default:
-		a.status.setKeys("[tree] enter options · F5 run · F2 hosts · / filter · r rescan · i inventory · c cert · o onboard · ? help · q quit")
+		a.status.setKeys("[tree] enter or F5 run it · F2 hosts · / filter · r rescan · i inventory · c cert · o onboard · ? help · q quit")
 	}
 }
 
 // --- small helpers ----------------------------------------------------------
-
-// isTextInput reports whether the focused primitive is something the user
-// types into, in which case the single letter bindings must not fire.
-func isTextInput(p tview.Primitive) bool {
-	switch p.(type) {
-	case *tview.InputField, *tview.DropDown, *tview.TextArea:
-		return true
-	}
-	return false
-}
 
 func splitList(s string) []string {
 	var out []string

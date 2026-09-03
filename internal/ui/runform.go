@@ -78,11 +78,11 @@ type runForm struct {
 	changed func()
 }
 
-func newRunForm(d config.Defaults, onRun, onHosts, onCreds func()) *runForm {
+func newRunForm(d config.Defaults, onRun, onHosts, onCreds, onCancel func()) *runForm {
 	f := &runForm{Form: tview.NewForm()}
 	f.SetBackgroundColor(colorBackground)
 	f.SetFieldBackgroundColor(colorBackground)
-	f.SetBorder(true).SetBorderColor(colorBorder).SetTitleColor(colorTitle).SetTitle(" options ")
+	f.SetBorder(true).SetBorderColor(colorBorder).SetTitleColor(colorTitle).SetTitle(" run options ")
 	compactForm(f.Form)
 
 	notify := func(string) {
@@ -103,10 +103,27 @@ func newRunForm(d config.Defaults, onRun, onHosts, onCreds func()) *runForm {
 	f.AddButton("run", onRun)
 	f.AddButton("hosts…", onHosts)
 	f.AddButton("credentials…", onCreds)
+	f.AddButton("cancel", onCancel)
 
 	showCheckbox(f.checkbox(fieldCheck))
 	showCheckbox(f.checkbox(fieldDiff))
 	return f
+}
+
+// previewRows is the box under the form in the run dialog: two border rows
+// and room for a command line that wraps.
+const previewRows = 5
+
+// runOptionsHeight is how tall the whole dialog has to be.
+const runOptionsHeight = formHeight + previewRows
+
+// runOptionsBox is the dialog the options are filled in before a run: the
+// form, and the command it currently describes.
+func runOptionsBox(f *runForm, preview *tview.TextView) tview.Primitive {
+	preview.SetBorder(true).SetBorderColor(colorBorder).SetTitleColor(colorTitle).SetTitle(" command ")
+	return tview.NewFlex().SetDirection(tview.FlexRow).
+		AddItem(f, formHeight, 0, true).
+		AddItem(preview, previewRows, 0, false)
 }
 
 // formExtraRows is what a form needs on top of one row per item: the blank

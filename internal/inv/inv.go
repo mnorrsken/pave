@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os/exec"
+	"path"
 	"sort"
 	"strings"
 )
@@ -150,4 +151,112 @@ func lastLine(s string) string {
 		}
 	}
 	return ""
+}
+
+// Resolve is which hosts a play's `hosts:` pattern selects, read the way
+// ansible reads it: terms separated by a colon or a comma, "!" excluding,
+// "&" intersecting, "*" and "?" globbing over both group and host names.
+// A term that names nothing in the inventory contributes nothing, so a
+// pattern that resolves to an empty list is a play that would touch nothing.
+func (in *Inventory) Resolve(pattern string) []string {
+	if in == nil {
+		return nil
+	}
+	set := map[string]bool{}
+	var intersects [][]string
+
+	for _, term := range splitPattern(pattern) {
+		switch {
+		case strings.HasPrefix(term, "!"):
+			for _, h := range in.match(term[1:]) {
+				delete(set, h)
+			}
+		case strings.HasPrefix(term, "&"):
+			intersects = append(intersects, in.match(term[1:]))
+		default:
+			for _, h := range in.match(term) {
+				set[h] = true
+			}
+		}
+	}
+
+	for _, keep := range intersects {
+		only := map[string]bool{}
+		for _, h := range keep {
+			if set[h] {
+				only[h] = true
+			}
+		}
+		set = only
+	}
+
+	out := make([]string, 0, len(set))
+	for h := range set {
+		out = append(out, h)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// match is one term of a pattern: a group, a host, or a glob over both.
+func (in *Inventory) match(term string) []string {
+	term = strings.TrimSpace(term)
+	switch term {
+	case "":
+		return nil
+	case "all", "*":
+		return in.Hosts
+	case "localhost", "127.0.0.1", "::1":
+		// ansible has an implicit localhost that no inventory has to mention,
+		// which is what the guard play of a playbook usually runs on.
+		if !contains(in.Hosts, term) {
+			return []string{term}
+		}
+	}
+
+	for _, g := range in.Groups {
+		if g.Name == term {
+			return g.Hosts
+		}
+	}
+	if contains(in.Hosts, term) {
+		return []string{term}
+	}
+	if !strings.ContainsAny(term, "*?") {
+		return nil
+	}
+
+	var out []string
+	for _, g := range in.Groups {
+		if globMatch(term, g.Name) {
+			out = append(out, g.Hosts...)
+		}
+	}
+	for _, h := range in.Hosts {
+		if globMatch(term, h) {
+			out = append(out, h)
+		}
+	}
+	return out
+}
+
+// splitPattern splits on both separators ansible accepts.
+func splitPattern(s string) []string {
+	return strings.FieldsFunc(s, func(r rune) bool { return r == ':' || r == ',' || r == '\n' })
+}
+
+// globMatch is ansible's fnmatch: "*" and "?" only, and no path separator to
+// worry about, so filepath.Match's semantics are the same here.
+func globMatch(pattern, name string) bool {
+	ok, err := path.Match(pattern, name)
+	return err == nil && ok
+}
+
+func contains(list []string, s string) bool {
+	for _, e := range list {
+		if e == s {
+			return true
+		}
+	}
+	return false
 }

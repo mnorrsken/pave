@@ -9,24 +9,36 @@ pave  ~/dev/ansible                        cert 11h32m · ansible-admin,pi,root
 ┌──────── playbooks ─────────┬─────────── playbooks/onboard.yml ───────────────┐
 │# base playbooks/           │Onboard a host onto the SSH user CA.             │
 │  * onboard                 │                                                 │
-│  * patch                   │  1. connect with a password (you supply it)     │
-│# cluster playbooks/        │  2. install CA trust + principal mapping        │
-│  * k3s-pve-reboot          │  3. PROVE certificate login works               │
-│  * pve-upgrade             │  4. only then disable password authentication   │
-│                            ├──────────────── options ────────────────────────┤
-│                            │ check mode ( )                                  │
-│                            │ diff       (x)                                  │
-│                            │ verbosity  none                                 │
-│                            │ limit      kubeworkers                          │
-│                            │ tags                                            │
+│  * patch                   │4 plays · 8 hosts in total                       │
+│# cluster playbooks/        │                                                 │
+│  * k3s-pve-reboot          │Install CA trust                                 │
+│  * pve-upgrade             │  hosts    auto_config                           │
+│                            │  affects  8 hosts: db1, gw1, node1, node2,      │
+│                            │           node3, node4, store1, web1            │
+│                            │  roles    ssh-config                            │
+│                            │  runs     serial 40                             │
 │                            │                                                 │
-│                            │   run     hosts…     credentials…               │
-│                            ├─────────────────────────────────────────────────┤
-│                            │$ ansible-playbook playbooks/onboard.yml --diff … │
+│                            │Verify certificate login before locking the door │
+│                            │  hosts    all                                   │
+│                            │  affects  8 hosts: db1, gw1, node1, node2,      │
+│                            │           node3, node4, store1, web1            │
+│                            │  tasks    3 tasks: debug, meta, ping            │
+│                            ├───────────────── command ───────────────────────┤
+│                            │$ ansible-playbook playbooks/onboard.yml --diff …│
 └────────────────────────────┴─────────────────────────────────────────────────┘
  3 playbooks in base, cluster
- enter options · F5 run · F2 hosts · / filter · r rescan · c cert · ? help · q quit
+ enter or F5 run it · F2 hosts · / filter · r rescan · c cert · ? help · q quit
 ```
+
+The right pane is the answer to "what would this actually do": every play, the
+hosts its pattern resolves to in the project's own inventory, the roles it
+applies and the modules its tasks call. The inventory is read with
+`ansible-inventory --list` in the background, once per project.
+
+Pressing enter or F5 opens the run options — check mode, diff, verbosity,
+limit, tags, extra vars, the lot — with the exact command underneath them.
+They are asked for immediately before the run and nothing else, so a playbook
+is never one keystroke away from going out with whatever was left in a form.
 
 Nothing about a particular repository layout is built in. pave scans a root
 directory, treats every directory with an `ansible.cfg` as a project, and
@@ -54,8 +66,8 @@ Press `?` inside for the keys. The short version:
 
 | key | |
 |---|---|
-| `enter` | on a playbook: move to the options form |
-| `F5` | run it |
+| `enter` | on a playbook: the run options |
+| `F5` | the same, and again inside them to run it |
 | `F2` / `L` | pick the limit out of the inventory |
 | `F3` | credentials for a host with no certificate yet |
 | `c` | sign a short lived certificate and load it into ssh-agent |
