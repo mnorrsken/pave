@@ -1,0 +1,25 @@
+---
+# What ansible knows about a host, without changing anything. Safe to run at
+# any time; useful for watching output scroll past in the run pane.
+
+- name: Report
+  hosts: all
+  gather_facts: true
+  tasks:
+    - name: Disks and memory
+      ansible.builtin.debug:
+        msg: "{{ ansible_facts['memtotal_mb'] }} MB, mounts: {{ ansible_facts['mounts'] | map(attribute='mount') | list }}"
+
+    - name: Everything, the long way
+      ansible.builtin.debug:
+        var: ansible_facts
+      tags: [verbose]
+
+    - name: Who is logged in
+      ansible.builtin.command: who
+      changed_when: false
+      register: who
+
+    - name: Say so
+      ansible.builtin.debug:
+        var: who.stdout_lines

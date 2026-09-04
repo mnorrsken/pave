@@ -1,0 +1,9 @@
+---
+baseline_group: lab
+baseline_users:
+  - alice
+  - bob
+baseline_dir: /opt/lab
+baseline_conf: /etc/lab.conf
+baseline_hosts: /etc/lab.hosts
+baseline_timezone: Europe/Stockholm

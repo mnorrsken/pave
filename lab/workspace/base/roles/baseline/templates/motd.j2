@@ -1,0 +1,8 @@
+{{ inventory_hostname }}
+{{ '-' * inventory_hostname | length }}
+
+{{ lab_motd }}
+
+owner    {{ lab_owner }}
+groups   {{ group_names | join(', ') }}
+built    {{ ansible_facts['date_time']['date'] }}

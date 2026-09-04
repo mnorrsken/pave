@@ -51,6 +51,14 @@ for any UI change.
   do not swap the order. The same goes for anything else drawn through tview:
   the tree markers and the checkbox strings in `theme.go` have no brackets in
   them for exactly this reason.
+- **Only whole lines reach the output pane, and never a CRLF.** tview indexes
+  what is added to a TextView starting from the last line it already has, and
+  it gets a write boundary in the middle of a line, or on one of the pty's
+  `\r\n`s, wrong: the text is drawn shifted by a character and stays that way
+  until a resize. `newlineWriter` drops the `\r`, and `outputPane.take` holds
+  an unfinished line back until a tick has gone by with nothing new, which is
+  what still lets an ansible prompt through. `TestOutputSurvivesAReadEndingOnALineBreak`
+  guards both.
 - **Never queue onto the main loop from the main loop.** `QueueUpdate` blocks
   until the update has run, so calling `a.queue` from a draw callback or a key
   handler deadlocks tview. `reflowDetail` runs in `SetAfterDrawFunc`: it sets

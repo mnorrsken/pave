@@ -1,0 +1,52 @@
+---
+# The second project, so the tree has more than one and the two have their own
+# inventory view, roles and options.
+#
+#   ansible-playbook site.yml
+#   ansible-playbook site.yml -l web --tags content
+
+- name: Web content
+  hosts: web
+  become: true
+  # One at a time, the way anything behind a load balancer has to go out.
+  serial: 1
+  roles:
+    - webroot
+
+- name: Gateway
+  hosts: edge
+  become: true
+  tasks:
+    - name: The gateway config exists
+      ansible.builtin.copy:
+        dest: /etc/lab-gateway.conf
+        owner: root
+        group: root
+        mode: "0644"
+        content: |
+          # Written by edge/site.yml.
+          {% for host in groups['web'] | sort %}
+          backend {{ host }}:80
+          {% endfor %}
+      tags: [config]
+
+    - name: Every backend is in the config
+      ansible.builtin.lineinfile:
+        path: /etc/lab-gateway.conf
+        line: "backend {{ item }}:80"
+        state: present
+      loop: "{{ groups['web'] | sort }}"
+      check_mode: true
+      changed_when: false
+      tags: [config]
+
+    - name: Show it
+      ansible.builtin.command: cat /etc/lab-gateway.conf
+      changed_when: false
+      register: conf
+      tags: [config]
+
+    - name: Say so
+      ansible.builtin.debug:
+        var: conf.stdout_lines
+      tags: [config]

@@ -1,0 +1,8 @@
+---
+- name: Stamp the config
+  ansible.builtin.copy:
+    dest: "{{ baseline_dir }}/stamp"
+    owner: root
+    group: "{{ baseline_group }}"
+    mode: "0664"
+    content: "{{ ansible_facts['date_time']['iso8601'] }}\n"

@@ -1,0 +1,12 @@
+---
+# Every container is published on a port of the loopback address, so ansible
+# talks to 127.0.0.1 and the port says which host it reaches.
+ansible_host: 127.0.0.1
+ansible_user: ansible
+ansible_python_interpreter: /usr/bin/python3
+# inventory_dir is where this file's inventory lives, so the key is found
+# whichever project the run started from.
+ansible_ssh_private_key_file: "{{ inventory_dir }}/../../.ssh/id_ed25519"
+
+lab_owner: platform
+lab_motd: "Managed by ansible. Do not hand-edit."

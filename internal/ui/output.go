@@ -37,6 +37,10 @@ type outputPane struct {
 
 	mu      sync.Mutex
 	pending []byte
+	// grew says output has arrived since the last flush, which is what tells
+	// a line that is still being written from one the process has stopped
+	// half way through and is waiting on.
+	grew bool
 	// following keeps the view pinned to the last line until the user scrolls
 	// up, which is what every log viewer does.
 	following bool
@@ -49,14 +53,16 @@ func newOutputPane() *outputPane {
 	o.SetBorder(true).SetBorderColor(colorBorder).SetTitleColor(colorTitle).SetTitle(" output ")
 	// The ANSI translation has to happen after the brackets are escaped: the
 	// output is full of them — PLAY [all], TASK [role : task], ok: [host] —
-	// and a TextView with dynamic colours would eat every one as a tag.
-	o.w = escapeWriter{w: tview.ANSIWriter(o.TextView)}
+	// and a TextView with dynamic colours would eat every one as a tag. The
+	// CRLFs go first, before either of them sees the stream.
+	o.w = &newlineWriter{w: escapeWriter{w: tview.ANSIWriter(o.TextView)}}
 	return o
 }
 
 func (o *outputPane) reset(title string) {
 	o.mu.Lock()
 	o.pending = nil
+	o.grew = false
 	o.following = true
 	o.mu.Unlock()
 
@@ -74,6 +80,7 @@ func (o *outputPane) push(b []byte) bool {
 	o.mu.Lock()
 	defer o.mu.Unlock()
 	o.pending = append(o.pending, b...)
+	o.grew = true
 	return len(o.pending) >= flushAt
 }
 
@@ -84,13 +91,44 @@ func (o *outputPane) empty() bool {
 	return len(o.pending) == 0
 }
 
-// flush writes what has arrived into the view. Main loop only.
-func (o *outputPane) flush() {
-	o.mu.Lock()
-	buf := o.pending
-	o.pending = nil
-	o.mu.Unlock()
+// flush writes the finished lines that have arrived into the view. Main loop
+// only.
+func (o *outputPane) flush() { o.write(o.take(false)) }
 
+// drain is flush including a line the process has not ended yet: at the end of
+// a step, and before one of pave's own lines, which would otherwise be drawn
+// ahead of output that arrived before it.
+func (o *outputPane) drain() { o.write(o.take(true)) }
+
+// take is the output to draw now. While more is still coming it stops at the
+// last line break, because tview indexes what is added to the view starting
+// from the last line it already has, and it gets a boundary in the middle of
+// a line wrong — the text ends up shifted by a character, and stays that way
+// until a resize makes it index everything again. A line the process has
+// stopped in the middle of, an ansible prompt, is nothing to do with that, so
+// once a tick has gone by with nothing new it goes out as it is.
+func (o *outputPane) take(all bool) []byte {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+
+	buf := o.pending
+	if !all && o.grew {
+		o.grew = false
+		i := bytes.LastIndexByte(buf, '\n')
+		if i < 0 {
+			if len(buf) < flushAt {
+				return nil // nothing finished yet; the next tick sends it
+			}
+			i = len(buf) - 1 // too much to sit on for a line that may never end
+		}
+		o.pending = append([]byte(nil), buf[i+1:]...)
+		return buf[:i+1]
+	}
+	o.pending, o.grew = nil, false
+	return buf
+}
+
+func (o *outputPane) write(buf []byte) {
 	if len(buf) > 0 {
 		o.w.Write(buf)
 	}
@@ -102,7 +140,7 @@ func (o *outputPane) flush() {
 // banner writes a line of pave's own, told apart from the command's output by
 // its colour and its leading marker. Main loop only.
 func (o *outputPane) banner(color tcell.Color, format string, args ...any) {
-	o.flush() // keep pave's lines in the right place in the output
+	o.drain() // keep pave's lines in the right place in the output
 	fmt.Fprintf(o.TextView, "[%s]:: %s[-]\n", tag(color), tview.Escape(fmt.Sprintf(format, args...)))
 	if o.follow() {
 		o.ScrollToEnd()
@@ -167,5 +205,45 @@ func (e escapeWriter) Write(p []byte) (int, error) {
 		return 0, err
 	}
 	// The caller wrote len(p) bytes; the expansion is our business.
+	return len(p), nil
+}
+
+// newlineWriter turns the pty's CRLF line endings into plain LF.
+//
+// A pty's line discipline sends \r\n, and tview's TextView parses what is
+// added to it starting from the last line it has already indexed. A CRLF on
+// the boundary between two of those writes comes out wrong — the next line
+// loses its first character, or gains a space — and stays wrong until a
+// resize makes it index the whole buffer again. Reads land wherever the
+// process happened to flush, so the boundary is on a CRLF often enough to
+// see. With plain LF there is nothing to split.
+//
+// It carries the state between writes because a read can end between the \r
+// and the \n, so there is one per pane and only the main loop touches it.
+type newlineWriter struct {
+	w       io.Writer
+	afterCR bool
+}
+
+func (n *newlineWriter) Write(p []byte) (int, error) {
+	if !n.afterCR && !bytes.ContainsRune(p, '\r') {
+		return n.w.Write(p)
+	}
+	out := make([]byte, 0, len(p))
+	for _, b := range p {
+		switch {
+		case b == '\r':
+			// The break itself; a \n right after it is the same one.
+			out = append(out, '\n')
+		case n.afterCR && b == '\n':
+		default:
+			out = append(out, b)
+		}
+		n.afterCR = b == '\r'
+	}
+	if _, err := n.w.Write(out); err != nil {
+		return 0, err
+	}
+	// The caller wrote len(p) bytes; the CRLFs are our business.
 	return len(p), nil
 }

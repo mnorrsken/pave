@@ -1,0 +1,11 @@
+---
+# The baseline every machine in the lab gets.
+#
+#   ansible-playbook playbooks/site.yml
+#   ansible-playbook playbooks/site.yml --check --diff -l web
+
+- name: Baseline
+  hosts: all
+  become: true
+  roles:
+    - baseline

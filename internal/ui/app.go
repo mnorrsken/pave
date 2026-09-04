@@ -504,7 +504,7 @@ func (a *App) stream(sess run.Session) error {
 	}
 	err := sess.Wait()
 	sess.Close()
-	a.queue(a.output.flush)
+	a.queue(a.output.drain)
 	return err
 }
 

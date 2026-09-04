@@ -1,0 +1,5 @@
+---
+webroot_dir: /srv/www
+webroot_title: "{{ inventory_hostname }}"
+webroot_pages:
+  - index.html

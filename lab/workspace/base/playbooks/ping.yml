@@ -1,0 +1,19 @@
+---
+# Is the lab up? Start here.
+#
+#   ansible-playbook playbooks/ping.yml
+
+- name: Reach every host
+  hosts: all
+  gather_facts: true
+  tasks:
+    - name: Answer
+      ansible.builtin.ping:
+
+    - name: Say what is there
+      ansible.builtin.debug:
+        msg: >-
+          {{ inventory_hostname }} is {{ ansible_facts['distribution'] }}
+          {{ ansible_facts['distribution_version'] }} on
+          {{ ansible_facts['architecture'] }}, python
+          {{ ansible_facts['python_version'] }}

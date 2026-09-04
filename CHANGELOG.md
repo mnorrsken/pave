@@ -4,6 +4,28 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the versions
 follow [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.2] - 2026-09-04
+
+### Fixed
+
+- The output pane could draw a row shifted by a character, missing its first
+  character or carrying a stray leading space, until the next resize forced a
+  full redraw. tview indexes what it has already been given from the last
+  write boundary, and a pty read can end in the middle of a line, or on the
+  `\r` of a `\r\n`, either of which threw that index off. `newlineWriter` now
+  turns CRLF into LF ahead of the escape and colour handling, carrying state
+  across writes since a read can stop between the `\r` and the `\n`, and the
+  pane holds an unfinished line back until nothing new has arrived for a
+  tick, so a run's output only ever grows by whole lines while still letting
+  ansible's own prompts through.
+
+### Added
+
+- `make lab` brings up four containers running sshd and opens pave on a
+  workspace of two projects, a shared inventory and a couple of roles, all
+  built from `ansible.builtin` alone, so there is something real to point the
+  app at without a homelab to hand. `make lab-down` tears it back down.
+
 ## [0.2.1] - 2026-09-03
 
 ### Changed

@@ -136,11 +136,17 @@ nothing else does.
 make build test race vet fmt
 make it        # the integration tests; needs a real ansible on PATH
 make dist      # cross-compile into dist/
+make lab       # four containers and a workspace to run pave against
 ```
 
 The tests drive the whole interface on a tcell simulation screen with the
 runner, the inventory and the certificate reader replaced, so `make test`
 needs neither ansible nor a terminal.
+
+For something real to point it at, `make lab` starts four containers with
+sshd on them and opens pave on a workspace of playbooks and roles that only
+use `ansible.builtin` — see [lab/README.md](lab/README.md). `make lab-down`
+removes it again.
 
 ## Licence
 

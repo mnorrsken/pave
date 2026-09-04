@@ -608,3 +608,72 @@ func TestTheOptionsAreADialog(t *testing.T) {
 		t.Errorf("cancelling started %d runs", h.runner.count())
 	}
 }
+
+// A pty ends its lines with CRLF, and a read can stop anywhere — including on
+// one of them. tview indexes what has been added to the view starting from
+// the last line it already knows, and a CRLF sitting on that boundary comes
+// out wrong: the line after it loses its first character, or gains a space,
+// and stays that way until a resize makes it index the whole buffer again.
+// The pane turns the CRLFs into plain LF on the way in so there is nothing to
+// split.
+func TestOutputSurvivesAReadEndingOnALineBreak(t *testing.T) {
+	const stream = "PLAY [all] ***\r\nok: [web-01]\r\nchanged: [web-02]\r\n"
+
+	want := drawOutput(t, stream)
+	if !strings.Contains(want, "ok: [web-01]") {
+		t.Fatalf("the whole stream at once already draws wrong:\n%s", want)
+	}
+	// Every place a read could stop, including in the middle of a CRLF.
+	for i := 1; i < len(stream); i++ {
+		if got := drawOutput(t, stream[:i], stream[i:]); got != want {
+			t.Errorf("a read stopping after %q draws\n%s\nwant\n%s", stream[:i], got, want)
+		}
+	}
+}
+
+// drawOutput writes the given reads into an output pane, drawing after each
+// one the way a run does, and returns what ended up on the screen.
+func drawOutput(t *testing.T, reads ...string) string {
+	t.Helper()
+	const width, height = 40, 6
+
+	screen := tcell.NewSimulationScreen("UTF-8")
+	if err := screen.Init(); err != nil {
+		t.Fatal(err)
+	}
+	defer screen.Fini()
+	screen.SetSize(width, height)
+
+	pane := newOutputPane()
+	pane.SetBorder(false)
+	pane.SetRect(0, 0, width, height)
+	pane.ScrollToEnd()
+	draw := func() {
+		pane.Draw(screen)
+		screen.Show()
+	}
+	// The worst case the run can produce: a flush and a draw after every
+	// single read, and one more once the reads have stopped.
+	for _, r := range reads {
+		pane.push([]byte(r))
+		pane.flush()
+		draw()
+	}
+	pane.flush()
+	draw()
+
+	cells, w, h := screen.GetContents()
+	var b strings.Builder
+	for y := 0; y < h; y++ {
+		for x := 0; x < w; x++ {
+			r := cells[y*w+x].Runes
+			if len(r) == 0 || r[0] == 0 {
+				b.WriteRune(' ')
+				continue
+			}
+			b.WriteRune(r[0])
+		}
+		b.WriteRune('\n')
+	}
+	return b.String()
+}

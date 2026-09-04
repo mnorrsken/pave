@@ -1,0 +1,5 @@
+---
+webroot_title: "{{ inventory_hostname }} — lab"
+webroot_pages:
+  - index.html
+  - health.html

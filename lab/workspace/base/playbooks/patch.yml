@@ -1,0 +1,26 @@
+---
+# Bring the packages up to date. The one playbook here that needs the network,
+# and the one worth running in check mode first.
+#
+#   ansible-playbook playbooks/patch.yml --check --diff
+
+- name: Patch
+  hosts: all
+  become: true
+  serial: 2
+  tasks:
+    - name: Refresh the package list
+      ansible.builtin.apt:
+        update_cache: true
+        cache_valid_time: 3600
+      tags: [cache]
+
+    - name: Upgrade what is installed
+      ansible.builtin.apt:
+        upgrade: safe
+      register: upgrade
+      tags: [upgrade]
+
+    - name: Say what happened
+      ansible.builtin.debug:
+        msg: "{{ 'nothing to do' if not upgrade.changed else 'packages were upgraded' }}"

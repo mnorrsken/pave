@@ -1,0 +1,5 @@
+---
+galaxy_info:
+  role_name: baseline
+  description: What every machine in the lab gets.
+dependencies: []
