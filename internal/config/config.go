@@ -43,6 +43,14 @@ type Config struct {
 	// AnsibleInventoryBin is the command that lists the inventory.
 	AnsibleInventoryBin string `yaml:"ansible_inventory_bin"`
 
+	// AnsibleConfigBin is the command that reports a project's settings. It
+	// is how pave finds out where the inventory is kept.
+	AnsibleConfigBin string `yaml:"ansible_config_bin"`
+
+	// Editor opens a file from the inventory browser. Empty means $VISUAL,
+	// then $EDITOR, then vi, which is what every other tool does.
+	Editor string `yaml:"editor"`
+
 	// Env is added to the environment of every run, for things like
 	// SOPS_AGE_KEY_FILE that ansible needs but the shell may not carry.
 	Env map[string]string `yaml:"env"`
@@ -154,6 +162,9 @@ func (c *Config) applyDefaults() {
 	if c.AnsibleInventoryBin == "" {
 		c.AnsibleInventoryBin = "ansible-inventory"
 	}
+	if c.AnsibleConfigBin == "" {
+		c.AnsibleConfigBin = "ansible-config"
+	}
 	if c.SSHCert.Key == "" {
 		c.SSHCert.Key = "~/.ssh/id_ed25519"
 	}
@@ -192,6 +203,18 @@ func Expand(path string) string {
 		}
 	}
 	return path
+}
+
+// EditorCommand is the editor to open a file with: the configured one, then
+// the usual environment variables, then vi. It is a command line, not just a
+// name, so "code -w" works.
+func (c *Config) EditorCommand() string {
+	for _, s := range []string{c.Editor, os.Getenv("VISUAL"), os.Getenv("EDITOR")} {
+		if s = strings.TrimSpace(s); s != "" {
+			return Expand(s)
+		}
+	}
+	return "vi"
 }
 
 // RunEnv is the environment for a run: the process environment, plus the

@@ -34,6 +34,10 @@ defaults:
   verbose: false   # whether the verbosity checkbox starts ticked
   verbosity: 1     # how many v's that checkbox is worth, 1 to 4
 
+# What the inventory browser opens a file with. A command line, not just a
+# name. Left out: $VISUAL, then $EDITOR, then vi.
+# editor: nvim
+
 # Only if the defaults do not fit your tree.
 # playbook_dirs: [playbooks, playbook]
 # exclude: [.git, .galaxy, node_modules, venv, .venv, roles, collections, group_vars, host_vars, files, templates]

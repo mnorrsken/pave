@@ -29,6 +29,7 @@ const (
 	iconProject  = "#"
 	iconDir      = "+"
 	iconPlaybook = "*"
+	iconFile     = "~"
 	markOn       = "(x)"
 	markOff      = "( )"
 )

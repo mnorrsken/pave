@@ -4,6 +4,29 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the versions
 follow [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- `i` opens the inventory: the files it is read from, its groups and its
+  hosts, each with the files that set variables for it. Enter opens one in
+  `$EDITOR` — the interface gives the terminal back while the editor has it —
+  and a sops or ansible-vault file goes through `sops` or `ansible-vault
+  edit`, so a secret is edited in the same place as everything else. A group
+  or host with nothing set yet is offered the paths it could have, named the
+  way the rest of the tree names them; enter creates one. `r` reads it all
+  again, which is what to do after editing something.
+- `editor` in the config, for what the browser opens a file with. A command
+  line, not just a name. Left out: `$VISUAL`, then `$EDITOR`, then `vi`.
+- `ansible_config_bin` in the config. Where the inventory lives comes from
+  `ansible-config dump`, so it is the path that actually won rather than
+  whatever `ansible.cfg` happens to say.
+
+### Changed
+
+- `i` used to reread the inventory of the selected project. That is now `r`
+  inside the browser.
+
 ## [0.3.0] - 2026-09-06
 
 ### Changed

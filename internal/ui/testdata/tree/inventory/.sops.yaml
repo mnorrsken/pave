@@ -1,0 +1,4 @@
+# Not variables: a .sops.yaml holds creation rules and must not show up as a
+# file to edit.
+creation_rules:
+  - path_regex: \.sops\.ya?ml$

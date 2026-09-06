@@ -142,7 +142,6 @@ const helpText = `
     F2 or L        pick the limit out of the inventory
     F3             credentials for a host that has no certificate yet
     esc            close the options without running anything
-    i              reload the inventory of the selected project
     ctrl-c         interrupt the run (a second one kills it)
     s              save the output of a finished run to a file
     esc            leave the output; the run keeps going, tab comes back
@@ -150,6 +149,20 @@ const helpText = `
   While a run is going, what you type goes to ansible: its vault, become and
   host key prompts work as they do in a terminal. Page up/down and the arrow
   keys stay here for scrolling.
+
+  [::b]the inventory[-::-]
+    i              the inventory of the selected project: the files it is
+                   made of, its groups and its hosts
+    enter          on a file: open it in the editor. A sops or ansible-vault
+                   file is decrypted first and encrypted again afterwards.
+                   A file that is not there yet is created.
+    enter          on a group or a host: its files
+    r              read the inventory again
+    esc            back to the playbooks
+
+  pave gives the terminal back while the editor has it, so a full screen
+  editor works as it does anywhere else. The editor is $VISUAL, then $EDITOR,
+  then vi, unless the config names one.
 
   [::b]certificates[-::-]
     c              sign a short lived certificate and load it into ssh-agent

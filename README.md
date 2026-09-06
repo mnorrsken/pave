@@ -27,7 +27,7 @@ pave  ~/dev/ansible                        cert 11h32m · ansible-admin,pi,root
 │                            │$ ansible-playbook playbooks/onboard.yml --diff …│
 └────────────────────────────┴─────────────────────────────────────────────────┘
  3 playbooks in base, cluster
- enter or F5 run it · F2 hosts · / filter · r rescan · c cert · ? help · q quit
+ enter or F5 run it · F2 hosts · / filter · r rescan · i inventory · ? help · q quit
 ```
 
 The right pane is the answer to "what would this actually do": every play, the
@@ -42,6 +42,15 @@ keystroke away from going out with whatever was left in a form. Running then
 asks once more, and that is where check mode is: run it, run it in check mode,
 or cancel. A dry run is one key away and can never be left ticked from the
 last time.
+
+`i` opens the inventory: the files it is read from, its groups and its hosts,
+each with the files that set variables for it. Enter on one opens it in your
+editor — pave gives the terminal back while it has it, so a full screen editor
+works as it does anywhere else. A sops or ansible-vault file goes through
+`sops` or `ansible-vault edit`, which decrypt it, run the editor on the plain
+text and encrypt it again, so secrets are edited in the same place as
+everything else. A group or host with nothing set yet is offered the paths it
+could have, spelt the way the rest of the tree spells them; enter creates one.
 
 Nothing about a particular repository layout is built in. pave scans a root
 directory, treats every directory with an `ansible.cfg` as a project, and
@@ -104,11 +113,16 @@ ssh_cert:
 defaults:
   diff: true
   verbosity: 2
+editor: nvim
 ```
 
 `ansible_playbook_bin` is the command a run executes. Point it at a wrapper
 script and the runs go wherever that script sends them — a container, another
 host — without pave having to know.
+
+`editor` is what the inventory browser opens a file with. It is a command
+line, not just a name, so `code -w` works. Left out, it is `$VISUAL`, then
+`$EDITOR`, then `vi`.
 
 ## How it runs things
 
@@ -118,6 +132,11 @@ started by hand from that directory would do: `roles_path`, the inventory and
 the vars plugins all resolve the same way. The inventory in the host picker is
 whatever `ansible-inventory --list` reports for that project, so encrypted
 group vars are decrypted by ansible itself and dynamic inventories work.
+
+Where the inventory lives is asked for the same way: `ansible-config dump`
+reports the path that actually won, whether it came from `ansible.cfg`, the
+environment or a wrapper's command line. pave never reads `ansible.cfg`
+itself.
 
 The command runs on a pty. That is what makes ansible colour its output and
 lets it prompt, and it is why there is no Windows build.

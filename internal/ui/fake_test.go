@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"io"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -13,6 +15,7 @@ import (
 
 	"github.com/mnorrsken/pave/internal/config"
 	"github.com/mnorrsken/pave/internal/inv"
+	"github.com/mnorrsken/pave/internal/invfile"
 	"github.com/mnorrsken/pave/internal/run"
 	"github.com/mnorrsken/pave/internal/sshcert"
 )
@@ -183,6 +186,35 @@ type harness struct {
 	runner  *fakeRunner
 	cert    sshcert.Status
 	stopped chan struct{}
+
+	// edits records what the editor would have been asked to run, and editFn
+	// is what happens instead of running it.
+	editMu sync.Mutex
+	edits  []run.Cmd
+	editFn func(run.Cmd) error
+}
+
+// onEdit replaces what the fake editor does: write the file, fail, whatever
+// the test is about.
+func (h *harness) onEdit(f func(run.Cmd) error) {
+	h.editMu.Lock()
+	defer h.editMu.Unlock()
+	h.editFn = f
+}
+
+func (h *harness) editCount() int {
+	h.editMu.Lock()
+	defer h.editMu.Unlock()
+	return len(h.edits)
+}
+
+func (h *harness) lastEdit() run.Cmd {
+	h.editMu.Lock()
+	defer h.editMu.Unlock()
+	if len(h.edits) == 0 {
+		return run.Cmd{}
+	}
+	return h.edits[len(h.edits)-1]
 }
 
 func newHarness(t *testing.T, tweak ...func(*Options)) *harness {
@@ -206,6 +238,21 @@ func newHarness(t *testing.T, tweak ...func(*Options)) *harness {
 		Runner: h.runner,
 		Inventory: func(context.Context, inv.Source) (*inv.Inventory, error) {
 			return testInventory(), nil
+		},
+		// The layout comes from a real look at the fixture tree; only the
+		// question ansible would be asked is answered here.
+		Layout: func(_ context.Context, src invfile.Source) (*invfile.Layout, error) {
+			return invfile.Describe(src.Dir, []string{"../inventory/hosts.yml"}), nil
+		},
+		Edit: func(c run.Cmd) error {
+			h.editMu.Lock()
+			h.edits = append(h.edits, c)
+			fn := h.editFn
+			h.editMu.Unlock()
+			if fn != nil {
+				return fn(c)
+			}
+			return nil
 		},
 		Cert: func(string) (sshcert.Status, error) { return h.cert, nil },
 		Now:  func() time.Time { return time.Date(2026, 9, 1, 21, 0, 0, 0, time.Local) },
@@ -293,6 +340,24 @@ func (h *harness) focusField(i int) {
 		h.sync()
 	}
 	h.t.Fatalf("field %d never took the keyboard", i)
+}
+
+// treeCopy copies the fixture tree into a temporary directory, for a test
+// that creates a file: the repository is not the place for one.
+func treeCopy(t *testing.T) string {
+	t.Helper()
+	dst := filepath.Join(t.TempDir(), "tree")
+	if err := os.CopyFS(dst, os.DirFS("testdata/tree")); err != nil {
+		t.Fatalf("copy the fixture tree: %v", err)
+	}
+	return dst
+}
+
+// openInventory gets the browser onto the screen the way a user does.
+func (h *harness) openInventory() {
+	h.t.Helper()
+	h.press('i')
+	h.waitFor("the inventory browser", func() bool { return h.app.invOpen })
 }
 
 // runNow starts a run the way a user does: F5 opens the options, F5 asks the

@@ -33,6 +33,11 @@ for any UI change.
   pure function with a table test; anything new goes there, not into the UI.
 - `internal/inv`: inventories come from `ansible-inventory --list`, never from
   parsing hosts.yml.
+- `internal/invfile`: where an inventory's files are — the sources, and the
+  group_vars/host_vars that apply to each group and host. The path comes from
+  `ansible-config dump`, never from reading `ansible.cfg` here, for the same
+  reason `inv` asks `ansible-inventory`. What a new vars file is called is
+  inferred from what the tree already has; do not add a config key for it.
 - `internal/sshcert`: shells out to ssh-keygen, so an encrypted CA key can
   prompt and the result is what signing by hand produces.
 - `internal/ui`: everything that reaches outside the process is a function on
@@ -63,6 +68,10 @@ for any UI change.
   until the update has run, so calling `a.queue` from a draw callback or a key
   handler deadlocks tview. `reflowDetail` runs in `SetAfterDrawFunc`: it sets
   the text itself and asks for the redraw from a goroutine.
+- **The editor takes the whole terminal.** `Application.Suspend` blocks the
+  main loop until the editor exits, so nothing draws and anything on the run
+  goroutine calling `queue` stalls until it comes back. The browser refuses to
+  open a file while a run is going, which is what keeps that from happening.
 - **Size a form box with `formBoxHeight`.** tview draws a form's buttons on a
   row below its items with a blank one in between, and its default border
   padding adds two more; get it wrong and the buttons are simply not there,

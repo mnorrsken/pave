@@ -1,0 +1,4 @@
+ansible_password: ENC[AES256_GCM,data:notreal==,type:str]
+sops:
+    lastmodified: "2026-09-06T00:00:00Z"
+    version: 3.13.3

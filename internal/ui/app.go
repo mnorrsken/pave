@@ -15,6 +15,7 @@ import (
 	"github.com/mnorrsken/pave/internal/config"
 	"github.com/mnorrsken/pave/internal/discover"
 	"github.com/mnorrsken/pave/internal/inv"
+	"github.com/mnorrsken/pave/internal/invfile"
 	"github.com/mnorrsken/pave/internal/run"
 	"github.com/mnorrsken/pave/internal/sshcert"
 )
@@ -50,6 +51,13 @@ type Options struct {
 	Scan func(root string, cfg *config.Config) ([]discover.Project, error)
 	// Inventory defaults to inv.Source.Load.
 	Inventory func(ctx context.Context, src inv.Source) (*inv.Inventory, error)
+	// Layout finds the files an inventory is made of. Defaults to
+	// invfile.Source.Load.
+	Layout func(ctx context.Context, src invfile.Source) (*invfile.Layout, error)
+	// Edit opens a file for editing. It defaults to giving the terminal back
+	// and running the command on it, which is the only thing a full screen
+	// editor can work with.
+	Edit func(c run.Cmd) error
 	// Cert defaults to sshcert.Read.
 	Cert func(key string) (sshcert.Status, error)
 	// Now defaults to time.Now.
@@ -72,6 +80,11 @@ type App struct {
 	status  *statusBar
 	filter  *tview.InputField
 
+	// invView is the inventory browser, a page of its own like the output.
+	// invOpen says it is the one on screen, which is when its keys are live.
+	invView *inventoryView
+	invOpen bool
+
 	// form is the run options. It lives in a dialog rather than in the
 	// layout: the options belong to the run about to be started, not to the
 	// playbook being read about.
@@ -93,6 +106,9 @@ type App struct {
 	invCache   map[string]*inv.Inventory
 	invLoading map[string]bool
 	invErrs    map[string]error
+	// invLayouts holds one file layout per project directory. Finding it runs
+	// ansible-config, which is as slow as everything else that asks ansible.
+	invLayouts map[string]*invfile.Layout
 	cert       sshcert.Status
 
 	// session is the command currently running, and running says whether the
@@ -131,6 +147,11 @@ func New(opts Options) *App {
 			return src.Load(ctx)
 		}
 	}
+	if opts.Layout == nil {
+		opts.Layout = func(ctx context.Context, src invfile.Source) (*invfile.Layout, error) {
+			return src.Load(ctx)
+		}
+	}
 	if opts.Cert == nil {
 		opts.Cert = sshcert.Read
 	}
@@ -144,6 +165,7 @@ func New(opts Options) *App {
 		invCache:    map[string]*inv.Inventory{},
 		invLoading:  map[string]bool{},
 		invErrs:     map[string]error{},
+		invLayouts:  map[string]*invfile.Layout{},
 		done:        make(chan struct{}),
 	}
 
@@ -171,6 +193,9 @@ func New(opts Options) *App {
 	a.output = newOutputPane()
 	a.status = newStatusBar()
 
+	a.invView = newInventoryView()
+	a.invView.onEdit = a.editFile
+
 	a.filter = tview.NewInputField().SetLabel("filter: ")
 	a.filter.SetFieldBackgroundColor(colorBackground)
 	a.filter.SetBackgroundColor(colorBackground)
@@ -193,7 +218,8 @@ func New(opts Options) *App {
 
 	a.body = tview.NewPages().
 		AddPage("browse", browse, true, true).
-		AddPage("output", a.output, true, false)
+		AddPage("output", a.output, true, false).
+		AddPage("inventory", a.invView, true, false)
 
 	main := tview.NewFlex().SetDirection(tview.FlexRow).
 		AddItem(a.header, 1, 0, false).
@@ -207,6 +233,10 @@ func New(opts Options) *App {
 		a.reflowDetail()
 	})
 	a.SetFocus(a.tree)
+
+	if a.opts.Edit == nil {
+		a.opts.Edit = a.suspendAndRun
+	}
 
 	a.rescan()
 	a.reloadCert()
@@ -811,21 +841,129 @@ func (a *App) ensureInventory(p *discover.Project) {
 	}()
 }
 
-func (a *App) reloadInventory() {
-	ref := a.tree.current()
-	if ref == nil {
+// --- the inventory browser --------------------------------------------------
+
+// openInventory shows the files the selected project's inventory is made of.
+// Both the membership and the layout come from ansible, so this is as slow as
+// reading an inventory the first time and nothing at all afterwards.
+func (a *App) openInventory() {
+	if a.running {
+		a.status.warn("wait for the run to finish")
 		return
 	}
-	delete(a.invErrs, ref.project.Dir)
-	in, err := a.inventory(ref.project, true)
+	ref := a.tree.current()
+	if ref == nil || ref.project == nil {
+		a.status.warn("select a playbook first")
+		return
+	}
+	p := ref.project
+
+	in, err := a.inventory(p, false)
 	if err != nil {
-		a.invErrs[ref.project.Dir] = err
+		a.invErrs[p.Dir] = err
 		a.refreshDetail()
 		a.showError("inventory", err)
 		return
 	}
+	l, err := a.layout(p, false)
+	if err != nil {
+		a.showError("inventory files", err)
+		return
+	}
+
+	a.invView.setInventory(p.Name, l, in)
+	a.invOpen = true
+	a.body.SwitchToPage("inventory")
+	a.SetFocus(a.invView.tree)
+	a.status.info("%s: %d hosts in %d groups", p.Name, len(in.Hosts), len(in.Groups))
+	a.refreshHints()
+}
+
+func (a *App) closeInventory() {
+	a.invOpen = false
+	a.body.SwitchToPage("browse")
+	a.SetFocus(a.tree)
+	a.refreshHints()
+}
+
+// reloadInventoryFiles is r in the browser: ask ansible again and look at the
+// tree again, which is what to do after editing something.
+func (a *App) reloadInventoryFiles() {
+	ref := a.tree.current()
+	if ref == nil || ref.project == nil {
+		return
+	}
+	p := ref.project
+	delete(a.invErrs, p.Dir)
+	in, err := a.inventory(p, true)
+	if err != nil {
+		a.invErrs[p.Dir] = err
+		a.refreshDetail()
+		a.showError("inventory", err)
+		return
+	}
+	l, err := a.layout(p, true)
+	if err != nil {
+		a.showError("inventory files", err)
+		return
+	}
+	a.invView.setInventory(p.Name, l, in)
 	a.refreshDetail()
-	a.status.ok("%s: %d hosts in %d groups", ref.project.Name, len(in.Hosts), len(in.Groups))
+	a.status.ok("%s: %d hosts in %d groups", p.Name, len(in.Hosts), len(in.Groups))
+}
+
+// layout is where a project keeps its inventory, read once per project.
+func (a *App) layout(p *discover.Project, reload bool) (*invfile.Layout, error) {
+	if !reload {
+		if l, ok := a.invLayouts[p.Dir]; ok {
+			return l, nil
+		}
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), inventoryTimeout)
+	defer cancel()
+
+	l, err := a.opts.Layout(ctx, invfile.Source{
+		Bin:        a.opts.Config.AnsibleConfigBin,
+		Dir:        p.Dir,
+		ConfigFile: p.ConfigFile,
+		Env:        a.opts.Config.RunEnv(),
+	})
+	if err != nil {
+		return nil, err
+	}
+	a.invLayouts[p.Dir] = l
+	return l, nil
+}
+
+// editFile opens one file. The interface gives the terminal back while the
+// editor has it, and looks at the tree again afterwards: the file may not
+// have existed a moment ago, and its contents decide how it opens next time.
+func (a *App) editFile(f invfile.File) {
+	if a.running {
+		a.status.warn("wait for the run to finish")
+		return
+	}
+	if err := invfile.Prepare(f); err != nil {
+		a.showError("edit", err)
+		return
+	}
+	cmd := invfile.EditCmd(f, a.opts.Config.EditorCommand(), a.opts.Config.RunEnv())
+	if err := a.opts.Edit(cmd); err != nil {
+		a.showError("edit", err)
+		return
+	}
+	a.status.ok("edited %s", shortPath(f.Path))
+	a.reloadInventoryFiles()
+}
+
+// suspendAndRun is the real editor: tview hands the terminal back, the
+// command runs on it, and the interface is redrawn when it exits.
+func (a *App) suspendAndRun(c run.Cmd) error {
+	var err error
+	if !a.Suspend(func() { err = run.Interactive(c) }) {
+		return fmt.Errorf("the interface would not release the terminal")
+	}
+	return err
 }
 
 // openCertForm signs a new certificate. The commands run in the output pane
@@ -957,6 +1095,12 @@ func (a *App) globalKeys(ev *tcell.EventKey) *tcell.EventKey {
 		return ev
 	}
 
+	// The inventory browser is a page of its own, and a letter in it is a
+	// command of its own rather than the tree's.
+	if a.invOpen {
+		return a.inventoryKeys(ev)
+	}
+
 	// While something is running the output pane is ansible's keyboard.
 	if a.running && a.focusedOn(a.output) {
 		return a.outputKeys(ev)
@@ -1024,7 +1168,7 @@ func (a *App) globalKeys(ev *tcell.EventKey) *tcell.EventKey {
 		}
 	case 'i':
 		if a.focusedOn(a.tree) || a.focusedOn(a.detail) {
-			a.reloadInventory()
+			a.openInventory()
 			return nil
 		}
 	case 'L':
@@ -1060,6 +1204,36 @@ func (a *App) optionsKeys(ev *tcell.EventKey) *tcell.EventKey {
 		return nil
 	case tcell.KeyF3:
 		a.openCredentials()
+		return nil
+	}
+	return ev
+}
+
+// inventoryKeys are the browser's own. Enter is not among them: the tree
+// handles it, opening a heading or editing a file.
+func (a *App) inventoryKeys(ev *tcell.EventKey) *tcell.EventKey {
+	switch ev.Key() {
+	case tcell.KeyEscape:
+		a.closeInventory()
+		return nil
+	case tcell.KeyTab, tcell.KeyBacktab:
+		if a.focusedOn(a.invView.detail) {
+			a.SetFocus(a.invView.tree)
+		} else {
+			a.SetFocus(a.invView.detail)
+		}
+		a.refreshHints()
+		return nil
+	}
+	switch ev.Rune() {
+	case 'r':
+		a.reloadInventoryFiles()
+		return nil
+	case 'q':
+		a.quit()
+		return nil
+	case '?':
+		a.openHelp()
 		return nil
 	}
 	return ev
@@ -1163,6 +1337,8 @@ func (a *App) refreshHints() {
 		a.status.setKeys("[run options] F5 run… · F2 hosts · F3 credentials · tab next field · esc cancel")
 	case a.modalOpen():
 		a.status.setKeys("esc close · tab move · enter accept")
+	case a.invOpen:
+		a.status.setKeys("[inventory] enter open a file or a heading · r reread it · tab next pane · esc back")
 	case a.filtering:
 		a.status.setKeys("[filter] type to narrow the tree · enter keep it · esc clear")
 	case a.running && a.focusedOn(a.output):
