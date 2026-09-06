@@ -13,6 +13,8 @@ onboard_playbook: base/playbooks/onboard.yml
 # a container.
 ansible_playbook_bin: ansible-playbook
 ansible_inventory_bin: ansible-inventory
+# Asked where the inventory is kept, for the inventory browser.
+ansible_config_bin: ansible-config
 
 # Added to the environment of every run and of every inventory read.
 env:
