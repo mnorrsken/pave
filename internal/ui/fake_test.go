@@ -278,13 +278,39 @@ func (h *harness) waitWithin(limit time.Duration, what string, cond func() bool)
 	h.t.Fatalf("timed out after %s waiting for %s", limit, what)
 }
 
-// runNow starts a run the way a user does: F5 opens the options, F5 in the
-// dialog runs what they describe.
+// focusField tabs round the run form until item i has the keyboard. The
+// options open on the run button, so a field is always a few tabs away.
+func (h *harness) focusField(i int) {
+	h.t.Helper()
+	item := h.app.form.GetFormItem(i)
+	for n := 0; n <= fieldCount+len(runFormButtons); n++ {
+		done := false
+		h.inspect(func() { done = item.HasFocus() })
+		if done {
+			return
+		}
+		h.key(tcell.KeyTab)
+		h.sync()
+	}
+	h.t.Fatalf("field %d never took the keyboard", i)
+}
+
+// runNow starts a run the way a user does: F5 opens the options, F5 asks the
+// confirmation, and enter takes its first button, which is a real run.
 func (h *harness) runNow() {
+	h.t.Helper()
+	h.confirmRun()
+	h.key(tcell.KeyEnter)
+}
+
+// confirmRun gets as far as the confirmation and leaves it open, so a test
+// can pick check mode or back out.
+func (h *harness) confirmRun() {
 	h.t.Helper()
 	h.key(tcell.KeyF5)
 	h.waitFor("the run options", func() bool { return h.app.optionsFront() })
 	h.key(tcell.KeyF5)
+	h.waitFor("the confirmation", func() bool { return h.app.modalOpen() && !h.app.optionsFront() })
 }
 
 func (h *harness) press(r rune) {

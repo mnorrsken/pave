@@ -68,22 +68,33 @@ func TestDetailAndPreviewFollowTheSelection(t *testing.T) {
 func TestRunUsesTheFormOptions(t *testing.T) {
 	h := newHarness(t)
 
-	// Enter opens the run options, where space ticks check mode.
+	// Enter opens the run options, on the run button, so most runs are one
+	// more keystroke. Diff is on to start with, and space on the checkbox is
+	// what would turn it off.
 	h.key(tcell.KeyEnter)
 	h.waitFor("the options dialog", func() bool { return h.app.optionsFront() && h.app.form.HasFocus() })
+	if !h.app.form.checkbox(fieldDiff).IsChecked() {
+		t.Error("diff should start on")
+	}
+	h.focusField(fieldDiff)
 	h.press(' ')
-	h.waitFor("check mode to be on", func() bool { return h.app.form.checkbox(fieldCheck).IsChecked() })
+	h.waitFor("diff to go off", func() bool { return !h.app.form.checkbox(fieldDiff).IsChecked() })
+	h.press(' ')
+	h.waitFor("diff to come back", func() bool { return h.app.form.checkbox(fieldDiff).IsChecked() })
 
 	h.inspect(func() {
-		h.app.form.checkbox(fieldDiff).SetChecked(true)
+		h.app.form.checkbox(fieldVerbose).SetChecked(true)
 		h.app.form.setLimit("kubeworkers")
 	})
 
-	h.runNow()
+	// F5 asks the confirmation; its first button is a real run.
+	h.key(tcell.KeyF5)
+	h.waitFor("the confirmation", func() bool { return h.app.modalOpen() && !h.app.optionsFront() })
+	h.key(tcell.KeyEnter)
 	h.waitFor("the run to start", func() bool { return h.runner.count() == 1 })
 
 	cmd := h.runner.lastCmd()
-	if got, want := strings.Join(cmd.Args, " "), "playbooks/onboard.yml --check --diff --limit kubeworkers"; got != want {
+	if got, want := strings.Join(cmd.Args, " "), "playbooks/onboard.yml --diff -v --limit kubeworkers"; got != want {
 		t.Errorf("args = %q, want %q", got, want)
 	}
 	if !strings.HasSuffix(cmd.Dir, filepath.Join("testdata", "tree", "base")) {
@@ -93,6 +104,49 @@ func TestRunUsesTheFormOptions(t *testing.T) {
 		t.Errorf("env has no ANSIBLE_CONFIG for the project: %v", tail(cmd.Env, 3))
 	}
 	h.runner.session(t, 0).finish(nil)
+}
+
+// The options open on the run button, so a run that wants them as they are is
+// one more keystroke and never a tab through the fields.
+func TestOptionsOpenOnTheRunButton(t *testing.T) {
+	h := newHarness(t)
+
+	h.key(tcell.KeyF5)
+	h.waitFor("the run button to have the keyboard", func() bool {
+		return h.app.optionsFront() && h.app.form.runButton().HasFocus()
+	})
+	h.key(tcell.KeyEnter)
+	h.waitFor("the confirmation", func() bool { return h.app.modalOpen() && !h.app.optionsFront() })
+}
+
+// Check mode is the confirmation's second button, so a dry run is one tab and
+// an enter away and is never left ticked in the form afterwards.
+func TestConfirmationChoosesCheckMode(t *testing.T) {
+	h := newHarness(t)
+
+	h.confirmRun()
+	h.key(tcell.KeyTab)
+	h.key(tcell.KeyEnter)
+	h.waitFor("the run to start", func() bool { return h.runner.count() == 1 })
+
+	if got, want := strings.Join(h.runner.lastCmd().Args, " "), "playbooks/onboard.yml --check --diff"; got != want {
+		t.Errorf("args = %q, want %q", got, want)
+	}
+	h.runner.session(t, 0).finish(nil)
+}
+
+// Cancelling the confirmation runs nothing and leaves the options open.
+func TestConfirmationCanBackOut(t *testing.T) {
+	h := newHarness(t)
+
+	h.confirmRun()
+	h.key(tcell.KeyEscape)
+	h.waitFor("the options to be back on top and have the keyboard", func() bool {
+		return h.app.optionsFront() && h.app.form.HasFocus()
+	})
+	if h.runner.count() != 0 {
+		t.Errorf("%d runs started, want none", h.runner.count())
+	}
 }
 
 func TestOutputStreamsAndTypingReachesAnsible(t *testing.T) {
@@ -488,9 +542,7 @@ func TestBackspaceEditsTheFormRatherThanOpeningAPicker(t *testing.T) {
 	h.key(tcell.KeyEnter)
 	h.waitFor("the form", func() bool { return h.app.form.HasFocus() })
 
-	for i := 0; i < fieldLimit; i++ {
-		h.key(tcell.KeyTab)
-	}
+	h.focusField(fieldLimit)
 	h.waitFor("the limit field", func() bool { return h.app.form.input(fieldLimit).HasFocus() })
 
 	h.typeText("kubeworkers")
@@ -517,11 +569,23 @@ func TestTheWholeFormIsDrawn(t *testing.T) {
 	h.sync()
 	screen := h.screenText()
 
-	for _, want := range []string{"check mode", "extra args", "run", "hosts…", "credentials…", "cancel", markOff} {
+	for _, want := range []string{"diff", "verbose (-v)", "extra args", "run", "hosts…", "credentials…", "cancel", markOn, markOff} {
 		if !strings.Contains(screen, want) {
 			t.Errorf("the screen does not show %q:\n%s", want, screen)
 		}
 	}
+
+	// The confirmation on top of it, with all three of its answers.
+	h.key(tcell.KeyF5)
+	h.waitFor("the confirmation", func() bool { return h.app.modalOpen() && !h.app.optionsFront() })
+	h.sync()
+	for _, want := range []string{"playbooks/onboard.yml", "run", "check mode", "cancel"} {
+		if screen := h.screenText(); !strings.Contains(screen, want) {
+			t.Errorf("the confirmation does not show %q:\n%s", want, screen)
+		}
+	}
+	h.key(tcell.KeyEscape)
+	h.waitFor("the confirmation to close", func() bool { return h.app.optionsFront() })
 	// The tree markers are drawn through tview's tag parser, so they must not
 	// look like colour tags either. They are behind the dialog, on the left.
 	h.key(tcell.KeyEscape)

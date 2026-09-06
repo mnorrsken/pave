@@ -35,10 +35,13 @@ hosts its pattern resolves to in the project's own inventory, the roles it
 applies and the modules its tasks call. The inventory is read with
 `ansible-inventory --list` in the background, once per project.
 
-Pressing enter or F5 opens the run options — check mode, diff, verbosity,
-limit, tags, extra vars, the lot — with the exact command underneath them.
-They are asked for immediately before the run and nothing else, so a playbook
-is never one keystroke away from going out with whatever was left in a form.
+Pressing enter or F5 opens the run options — diff, verbosity, limit, tags,
+extra vars, the lot — with the exact command underneath them. They are asked
+for immediately before the run and nothing else, so a playbook is never one
+keystroke away from going out with whatever was left in a form. Running then
+asks once more, and that is where check mode is: run it, run it in check mode,
+or cancel. A dry run is one key away and can never be left ticked from the
+last time.
 
 Nothing about a particular repository layout is built in. pave scans a root
 directory, treats every directory with an `ansible.cfg` as a project, and
@@ -100,6 +103,7 @@ ssh_cert:
   principals: [ansible-admin, pi, root]
 defaults:
   diff: true
+  verbosity: 2
 ```
 
 `ansible_playbook_bin` is the command a run executes. Point it at a wrapper

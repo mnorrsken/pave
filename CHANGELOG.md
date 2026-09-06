@@ -4,6 +4,20 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the versions
 follow [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.0] - 2026-09-06
+
+### Changed
+
+- Running now asks once more before it starts: run it, run it in check mode,
+  or cancel. Check mode is gone from the run options, so a dry run is one key
+  away and can never be left ticked from a previous run.
+- Diff is on by default. `defaults.diff: false` in the config turns it off.
+- The run options open on the run button, so a run that wants them as they
+  are is one keystroke rather than a tab through every field.
+- Verbosity is a checkbox rather than a dropdown. `defaults.verbosity` is now
+  how many v's it is worth (1 by default), and `defaults.verbose` whether it
+  starts ticked. `defaults.check` is no longer read.
+
 ## [0.2.2] - 2026-09-04
 
 ### Fixed

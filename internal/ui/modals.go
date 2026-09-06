@@ -66,6 +66,29 @@ func confirmBox(title, message string, onYes, onNo func()) tview.Primitive {
 	return m
 }
 
+// runConfirmBox is the last thing between the options and a run. Check mode
+// is a choice here rather than a checkbox in the form, so a dry run is one
+// key away and can never be left ticked from the last time.
+func runConfirmBox(playbook string, onRun, onCheck, onCancel func()) tview.Primitive {
+	m := tview.NewModal().
+		SetText("Run " + playbook + "?").
+		AddButtons([]string{"run", "check mode", "cancel"}).
+		SetDoneFunc(func(_ int, label string) {
+			switch label {
+			case "run":
+				onRun()
+			case "check mode":
+				onCheck()
+			default:
+				// The cancel button, and escape, which comes through with no
+				// label at all.
+				onCancel()
+			}
+		})
+	m.SetTitle(" run ").SetBorder(true)
+	return m
+}
+
 // promptBox asks for one value. It is a bare input field rather than a form:
 // with one field, enter should mean "yes, that one" and not "move to the ok
 // button".
@@ -115,7 +138,7 @@ const helpText = `
 
   [::b]running[-::-]
     F5             the run options for the selected playbook
-    F5 again       run it with what they say
+    F5 again       ask whether to run it, run it in check mode, or not
     F2 or L        pick the limit out of the inventory
     F3             credentials for a host that has no certificate yet
     esc            close the options without running anything

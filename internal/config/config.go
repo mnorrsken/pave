@@ -67,11 +67,17 @@ type SSHCert struct {
 	AddToAgent *bool `yaml:"add_to_agent"`
 }
 
-// Defaults are the run options a newly opened playbook starts with.
+// Defaults are the run options a newly opened playbook starts with. Check
+// mode is not among them: it is chosen when a run is confirmed, not left
+// ticked from the last time.
 type Defaults struct {
-	Check     bool `yaml:"check"`
-	Diff      bool `yaml:"diff"`
-	Verbosity int  `yaml:"verbosity"`
+	// Diff is on unless the config turns it off, so a run says what it
+	// changed. A pointer because false has to be tellable from unset.
+	Diff *bool `yaml:"diff"`
+	// Verbose ticks the verbosity checkbox when the options open.
+	Verbose bool `yaml:"verbose"`
+	// Verbosity is how many v's that checkbox is worth.
+	Verbosity int `yaml:"verbosity"`
 }
 
 // Dir is pave's config directory: $XDG_CONFIG_HOME/pave, otherwise
@@ -160,6 +166,16 @@ func (c *Config) applyDefaults() {
 	if c.SSHCert.AddToAgent == nil {
 		yes := true
 		c.SSHCert.AddToAgent = &yes
+	}
+	if c.Defaults.Diff == nil {
+		yes := true
+		c.Defaults.Diff = &yes
+	}
+	if c.Defaults.Verbosity <= 0 {
+		c.Defaults.Verbosity = 1
+	}
+	if c.Defaults.Verbosity > 4 {
+		c.Defaults.Verbosity = 4
 	}
 }
 

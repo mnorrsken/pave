@@ -27,11 +27,12 @@ ssh_cert:
   # identity: martin@laptop     # defaults to <user>@<host>
   add_to_agent: true
 
-# What a newly opened playbook starts with.
+# What a newly opened playbook starts with. Check mode is not here: it is
+# answered in the confirmation the run button opens.
 defaults:
-  check: false
-  diff: true
-  verbosity: 0
+  diff: true       # on unless you say otherwise
+  verbose: false   # whether the verbosity checkbox starts ticked
+  verbosity: 1     # how many v's that checkbox is worth, 1 to 4
 
 # Only if the defaults do not fit your tree.
 # playbook_dirs: [playbooks, playbook]

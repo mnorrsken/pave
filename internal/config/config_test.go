@@ -17,6 +17,9 @@ func TestLoadMissingFileIsDefaults(t *testing.T) {
 	if cfg.SSHCert.Validity != "+12h" {
 		t.Errorf("validity = %q", cfg.SSHCert.Validity)
 	}
+	if cfg.Defaults.Diff == nil || !*cfg.Defaults.Diff {
+		t.Errorf("diff should default to on")
+	}
 	if cfg.SSHCert.AddToAgent == nil || !*cfg.SSHCert.AddToAgent {
 		t.Errorf("add_to_agent should default to true")
 	}
@@ -38,7 +41,8 @@ ssh_cert:
   validity: +8h
   principals: [ansible-admin, root]
 defaults:
-  diff: true
+  diff: false
+  verbose: true
 `)
 	cfg, err := Load(user)
 	if err != nil {
@@ -47,8 +51,13 @@ defaults:
 	if cfg.SSHCert.Validity != "+8h" || len(cfg.SSHCert.Principals) != 2 {
 		t.Fatalf("ssh_cert = %+v", cfg.SSHCert)
 	}
-	if !cfg.Defaults.Diff || cfg.Defaults.Check {
+	// diff is on unless the file says otherwise, and the level the verbosity
+	// checkbox is worth has a default of its own.
+	if cfg.Defaults.Diff == nil || *cfg.Defaults.Diff || !cfg.Defaults.Verbose {
 		t.Errorf("defaults = %+v", cfg.Defaults)
+	}
+	if cfg.Defaults.Verbosity != 1 {
+		t.Errorf("verbosity = %d, want 1", cfg.Defaults.Verbosity)
 	}
 	// The key the user file did not set keeps its default.
 	if cfg.SSHCert.Key != "~/.ssh/id_ed25519" {
@@ -56,14 +65,14 @@ defaults:
 	}
 
 	root := t.TempDir()
-	write(t, filepath.Join(root, FileName), "onboard_playbook: base/playbooks/onboard.yml\ndefaults:\n  check: true\n")
+	write(t, filepath.Join(root, FileName), "onboard_playbook: base/playbooks/onboard.yml\ndefaults:\n  verbosity: 3\n")
 	if err := cfg.LoadRootOverride(root); err != nil {
 		t.Fatalf("override: %v", err)
 	}
 	if cfg.OnboardPlaybook != "base/playbooks/onboard.yml" {
 		t.Errorf("onboard = %q", cfg.OnboardPlaybook)
 	}
-	if !cfg.Defaults.Check || !cfg.Defaults.Diff {
+	if cfg.Defaults.Verbosity != 3 || !cfg.Defaults.Verbose {
 		t.Errorf("override should add to defaults, not replace them: %+v", cfg.Defaults)
 	}
 	// Untouched keys survive the overlay.

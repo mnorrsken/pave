@@ -12,9 +12,8 @@ import (
 // Form item positions. tview forms are addressed by index, so the names live
 // here rather than being spelled out at every call site.
 const (
-	fieldCheck = iota
-	fieldDiff
-	fieldVerbosity
+	fieldDiff = iota
+	fieldVerbose
 	fieldLimit
 	fieldTags
 	fieldSkipTags
@@ -74,12 +73,16 @@ func (c credentials) summary() string {
 type runForm struct {
 	*tview.Form
 
+	// verbosity is what the verbose checkbox is worth when it is ticked. The
+	// level is a setting, not something to pick before every run.
+	verbosity int
+
 	creds   credentials
 	changed func()
 }
 
 func newRunForm(d config.Defaults, onRun, onHosts, onCreds, onCancel func()) *runForm {
-	f := &runForm{Form: tview.NewForm()}
+	f := &runForm{Form: tview.NewForm(), verbosity: d.Verbosity}
 	f.SetBackgroundColor(colorBackground)
 	f.SetFieldBackgroundColor(colorBackground)
 	f.SetBorder(true).SetBorderColor(colorBorder).SetTitleColor(colorTitle).SetTitle(" run options ")
@@ -90,24 +93,46 @@ func newRunForm(d config.Defaults, onRun, onHosts, onCreds, onCancel func()) *ru
 			f.changed()
 		}
 	}
-	f.AddCheckbox("check mode", d.Check, func(bool) { notify("") })
-	f.AddCheckbox("diff", d.Diff, func(bool) { notify("") })
-	f.AddDropDown("verbosity", []string{"none", "-v", "-vv", "-vvv", "-vvvv"}, d.Verbosity,
-		func(string, int) { notify("") })
+	f.AddCheckbox("diff", d.Diff == nil || *d.Diff, func(bool) { notify("") })
+	f.AddCheckbox("verbose ("+verbosityFlag(f.verbosity)+")", d.Verbose, func(bool) { notify("") })
 	f.AddInputField("limit", "", 0, nil, notify)
 	f.AddInputField("tags", "", 0, nil, notify)
 	f.AddInputField("skip tags", "", 0, nil, notify)
 	f.AddInputField("extra vars", "", 0, nil, notify)
 	f.AddInputField("extra args", "", 0, nil, notify)
 
-	f.AddButton("run", onRun)
-	f.AddButton("hosts…", onHosts)
-	f.AddButton("credentials…", onCreds)
-	f.AddButton("cancel", onCancel)
+	for i, b := range []func(){onRun, onHosts, onCreds, onCancel} {
+		f.AddButton(runFormButtons[i], b)
+	}
 
-	showCheckbox(f.checkbox(fieldCheck))
 	showCheckbox(f.checkbox(fieldDiff))
+	showCheckbox(f.checkbox(fieldVerbose))
 	return f
+}
+
+// runFormButtons are the form's buttons, in order. tview numbers them after
+// the items, so the run button is at fieldCount.
+var runFormButtons = []string{"run", "hosts…", "credentials…", "cancel"}
+
+// buttonRun is the run button's position.
+const buttonRun = fieldCount
+
+// focusRun puts the keyboard on the run button. The options open there
+// because most runs want them as they are: enter runs, tab reaches the
+// fields.
+func (f *runForm) focusRun() { f.SetFocus(buttonRun) }
+
+func (f *runForm) runButton() *tview.Button { return f.GetButton(buttonRun - fieldCount) }
+
+// verbosityFlag is the flag a verbosity level spells, for the checkbox label.
+func verbosityFlag(level int) string {
+	if level < 1 {
+		level = 1
+	}
+	if level > 4 {
+		level = 4
+	}
+	return "-" + strings.Repeat("v", level)
 }
 
 // previewRows is the box under the form in the run dialog: two border rows
@@ -174,14 +199,15 @@ func (f *runForm) setCredentials(c credentials) {
 	}
 }
 
-// apply copies the form's options onto a spec. The password files are not set
-// here: they only exist for the length of one run, and the caller writes them
-// just before starting it.
+// apply copies the form's options onto a spec. Check mode is not one of them:
+// it is answered in the confirmation, so it cannot be left on by mistake. The
+// password files are not set here either: they only exist for the length of
+// one run, and the caller writes them just before starting it.
 func (f *runForm) apply(s *run.Spec) {
-	s.Check = f.checkbox(fieldCheck).IsChecked()
 	s.Diff = f.checkbox(fieldDiff).IsChecked()
-	verbosity, _ := f.GetFormItem(fieldVerbosity).(*tview.DropDown).GetCurrentOption()
-	s.Verbosity = verbosity
+	if f.checkbox(fieldVerbose).IsChecked() {
+		s.Verbosity = f.verbosity
+	}
 	s.Limit = strings.TrimSpace(f.limit())
 	s.Tags = strings.TrimSpace(f.input(fieldTags).GetText())
 	s.SkipTags = strings.TrimSpace(f.input(fieldSkipTags).GetText())

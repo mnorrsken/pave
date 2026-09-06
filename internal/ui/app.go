@@ -157,7 +157,7 @@ func New(opts Options) *App {
 	a.detail.SetBackgroundColor(colorBackground)
 	a.detail.SetBorder(true).SetBorderColor(colorBorder).SetTitleColor(colorTitle).SetTitle(" playbook ")
 
-	a.form = newRunForm(opts.Config.Defaults, a.runSelected, a.openHostPicker, a.openCredentials, a.closeRunOptions)
+	a.form = newRunForm(opts.Config.Defaults, a.confirmRun, a.openHostPicker, a.openCredentials, a.closeRunOptions)
 	a.form.changed = a.renderPreview
 
 	a.preview = tview.NewTextView().SetDynamicColors(true).SetWrap(true)
@@ -361,7 +361,34 @@ type step struct {
 	allowFail bool
 }
 
-func (a *App) runSelected() {
+// confirmRun asks the last question before a run: for real, or as a dry run.
+// It is where check mode is chosen, so the form has no checkbox for it.
+func (a *App) confirmRun() {
+	if a.running {
+		a.status.warn("a run is already going")
+		return
+	}
+	pb := a.tree.currentPlaybook()
+	if pb == nil {
+		a.status.warn("select a playbook first")
+		return
+	}
+	var name string
+	done := func(check bool) func() {
+		return func() {
+			a.closeModal(name)
+			a.runSelected(check)
+		}
+	}
+	name = a.openModal(center(runConfirmBox(filepath.ToSlash(pb.Rel),
+		done(false), done(true),
+		func() { a.closeModal(name) },
+	), 64, 9))
+}
+
+// runSelected starts the run the form describes. check is what the
+// confirmation answered.
+func (a *App) runSelected(check bool) {
 	if a.running {
 		a.status.warn("a run is already going")
 		return
@@ -371,6 +398,7 @@ func (a *App) runSelected() {
 		a.status.warn("select a playbook first")
 		return
 	}
+	spec.Check = check
 
 	var cleanup []func()
 	creds := a.form.creds
@@ -670,6 +698,7 @@ func (a *App) openRunOptions() {
 	}
 	a.renderPreview()
 	a.optionsModal = a.openModal(a.runOptions)
+	a.form.focusRun()
 	a.SetFocus(a.form)
 	a.refreshHints()
 }
@@ -1024,7 +1053,7 @@ func (a *App) optionsKeys(ev *tcell.EventKey) *tcell.EventKey {
 		a.closeRunOptions()
 		return nil
 	case tcell.KeyF5:
-		a.runSelected()
+		a.confirmRun()
 		return nil
 	case tcell.KeyF2:
 		a.openHostPicker()
@@ -1131,7 +1160,7 @@ func (a *App) focusNext() {
 func (a *App) refreshHints() {
 	switch {
 	case a.optionsFront():
-		a.status.setKeys("[run options] F5 run · F2 hosts · F3 credentials · tab next field · esc cancel")
+		a.status.setKeys("[run options] F5 run… · F2 hosts · F3 credentials · tab next field · esc cancel")
 	case a.modalOpen():
 		a.status.setKeys("esc close · tab move · enter accept")
 	case a.filtering:
