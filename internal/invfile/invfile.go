@@ -11,6 +11,7 @@ package invfile
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -420,6 +421,33 @@ func withEditor(env []string, editor string) []string {
 		out = append(out, e)
 	}
 	return append(out, "EDITOR="+editor)
+}
+
+// sopsUnmodified is the exit code sops uses to say the editor came back with
+// the file unchanged. It writes nothing and says "File has not changed",
+// which is an answer rather than a failure.
+const sopsUnmodified = 200
+
+// Unchanged reports whether an error from an edit only means nothing was
+// edited. Only sops has an opinion here: an editor that is quit without
+// saving exits 0 like any other.
+func Unchanged(f File, err error) bool {
+	if err == nil || f.Kind != KindSops {
+		return false
+	}
+	var exit *exec.ExitError
+	return errors.As(err, &exit) && exit.ExitCode() == sopsUnmodified
+}
+
+// Discard takes back what Prepare made for a file that never got written:
+// backing out of a new file should not leave an empty directory behind. A
+// directory with anything at all in it is left alone.
+func Discard(f File) {
+	if f.Exists || exists(f.Path) {
+		return
+	}
+	// Remove only succeeds on an empty directory, which is the whole test.
+	os.Remove(filepath.Dir(f.Path))
 }
 
 // Prepare makes the directory a file is about to be created in. sops and the

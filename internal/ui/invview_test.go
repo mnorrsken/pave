@@ -2,7 +2,9 @@ package ui
 
 import (
 	"errors"
+	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -107,16 +109,28 @@ func TestInventoryBrowserCreatesAMissingFile(t *testing.T) {
 		t.Fatalf("path = %q, want %q", ref.file.Path, want)
 	}
 
+	// The editor writes the file; pave only has to have made the directory it
+	// goes in first, which no editor does for itself. This one writes nothing,
+	// so the directory should not survive either.
+	var dirWasThere bool
+	h.onEdit(func(c run.Cmd) error {
+		info, err := os.Stat(filepath.Dir(c.Args[len(c.Args)-1]))
+		dirWasThere = err == nil && info.IsDir()
+		return nil
+	})
+
 	h.key(tcell.KeyEnter)
 	h.waitFor("the editor to be asked for", func() bool { return h.editCount() == 1 })
 
-	// The editor writes the file; pave only has to have made the directory it
-	// goes in, which no editor does for itself.
-	if info, err := os.Stat(filepath.Dir(want)); err != nil || !info.IsDir() {
-		t.Errorf("the directory was not created: %v", err)
+	if !dirWasThere {
+		t.Error("the editor was given a path whose directory does not exist")
 	}
 	if _, err := os.Stat(want); !os.IsNotExist(err) {
-		t.Errorf("pave should not have written the file itself")
+		t.Error("pave should not have written the file itself")
+	}
+	// Backing out of a new file leaves nothing behind.
+	if _, err := os.Stat(filepath.Dir(want)); !os.IsNotExist(err) {
+		t.Errorf("an empty directory was left behind: %v", err)
 	}
 }
 
@@ -172,6 +186,58 @@ func TestInventoryBrowserReportsAnEditorThatFails(t *testing.T) {
 	h.waitFor("the error", func() bool { return strings.Contains(h.screenText(), "editor exploded") })
 }
 
+// sops exits 200 to say the file was left as it was. That is an answer, not
+// a failure: nothing to report as an error, and nothing to reread.
+func TestInventoryBrowserAcceptsAnUnchangedSopsFile(t *testing.T) {
+	h := newHarness(t)
+	h.onEdit(func(run.Cmd) error {
+		return fmt.Errorf("sops: %w", sopsExit(t, 200))
+	})
+
+	h.openInventory()
+	h.selectInvNode("all")
+	h.key(tcell.KeyEnter)
+	h.waitFor("the files of the group", func() bool { return strings.Contains(h.screenText(), "vault.sops.yml") })
+	h.selectInvNode("vault.sops.yml")
+	h.key(tcell.KeyEnter)
+
+	h.waitFor("the note that nothing changed", func() bool {
+		return strings.Contains(h.app.status.text(), "unchanged:")
+	})
+	if h.app.modalOpen() {
+		t.Errorf("an unchanged file opened an error dialog:\n%s", h.screenText())
+	}
+}
+
+// Closing a dialog opened from the browser gives the keyboard back to the
+// browser. It used to go to the playbook tree, which is not on the screen, so
+// the arrow keys did nothing until tab was pressed.
+func TestInventoryBrowserKeepsTheKeyboardAfterADialog(t *testing.T) {
+	h := newHarness(t)
+	h.onEdit(func(run.Cmd) error { return errors.New("editor exploded") })
+
+	h.openInventory()
+	before := h.currentInvRef().key()
+	h.selectInvNode("all")
+	h.key(tcell.KeyEnter)
+	h.waitFor("the files of the group", func() bool { return strings.Contains(h.screenText(), "vars.yml") })
+	h.selectInvNode("vars.yml")
+	h.key(tcell.KeyEnter)
+	h.waitFor("the error", func() bool { return h.app.modalOpen() })
+
+	h.key(tcell.KeyEnter) // the ok button
+	h.waitFor("the dialog to close", func() bool { return !h.app.modalOpen() })
+	if !h.app.invView.tree.HasFocus() {
+		t.Fatal("the browser did not get the keyboard back")
+	}
+
+	// And the arrow keys move in it, with no tab needed first.
+	after := h.currentInvRef().key()
+	h.key(tcell.KeyUp)
+	h.waitFor("the cursor to move", func() bool { return h.app.invView.current().key() != after })
+	_ = before
+}
+
 // The browser's letters are its own: r rereads it rather than rescanning the
 // playbook tree, and the tree's own keys stay out of the way.
 func TestInventoryBrowserOwnsItsKeys(t *testing.T) {
@@ -194,6 +260,16 @@ func TestInventoryBrowserOwnsItsKeys(t *testing.T) {
 	if h.app.filtering {
 		t.Error("the tree's filter opened from inside the browser")
 	}
+}
+
+// sopsExit is a real exit status, which is the only kind Unchanged looks at.
+func sopsExit(t *testing.T, code int) error {
+	t.Helper()
+	err := exec.Command("sh", "-c", fmt.Sprintf("exit %d", code)).Run()
+	if err == nil {
+		t.Fatalf("exit %d did not fail", code)
+	}
+	return err
 }
 
 // currentInvRef is what the browser's cursor is on.

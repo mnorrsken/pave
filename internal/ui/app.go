@@ -674,6 +674,10 @@ func (a *App) closeModal(name string) {
 		if _, p := a.pages.GetFrontPage(); p != nil {
 			a.SetFocus(p)
 		}
+	case a.invOpen:
+		// The playbook tree is not on the screen while the browser is: giving
+		// it the keyboard would leave the arrow keys doing nothing visible.
+		a.SetFocus(a.invView.tree)
 	case a.running:
 		a.SetFocus(a.output)
 	default:
@@ -948,7 +952,15 @@ func (a *App) editFile(f invfile.File) {
 		return
 	}
 	cmd := invfile.EditCmd(f, a.opts.Config.EditorCommand(), a.opts.Config.RunEnv())
-	if err := a.opts.Edit(cmd); err != nil {
+	err := a.opts.Edit(cmd)
+	invfile.Discard(f)
+	switch {
+	case invfile.Unchanged(f, err):
+		// The words come before the path: a long one is what gets cut off at
+		// the edge of the screen, not the message.
+		a.status.info("unchanged: %s", shortPath(f.Path))
+		return
+	case err != nil:
 		a.showError("edit", err)
 		return
 	}

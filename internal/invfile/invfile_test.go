@@ -2,6 +2,8 @@ package invfile
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -282,4 +284,66 @@ func TestLoadWithRealAnsible(t *testing.T) {
 	if got := l.For(ScopeGroup, "kubenodes"); len(got) != 1 || filepath.Base(got[0].Path) != "kubenodes.yml" || !got[0].Exists {
 		t.Errorf("kubenodes = %+v", got)
 	}
+}
+
+// sops says "the file has not changed" with an exit code. That is an answer,
+// not a failure, and it must not be reported as one.
+func TestUnchanged(t *testing.T) {
+	sops := File{Path: "/x/vault.sops.yml", Kind: KindSops, Exists: true}
+	plain := File{Path: "/x/vars.yml", Exists: true}
+
+	if Unchanged(sops, nil) {
+		t.Error("no error is not an unchanged file")
+	}
+	if got := exitErr(t, 200); !Unchanged(sops, got) {
+		t.Errorf("sops exiting 200 should mean unchanged, got %v", got)
+	}
+	// The error is wrapped by the time it gets here.
+	if !Unchanged(sops, fmt.Errorf("sops: %w", exitErr(t, 200))) {
+		t.Error("a wrapped exit status should still be recognised")
+	}
+	if Unchanged(sops, exitErr(t, 1)) {
+		t.Error("any other exit status is a real failure")
+	}
+	// An editor's exit codes are its own; only sops means this by 200.
+	if Unchanged(plain, exitErr(t, 200)) {
+		t.Error("200 from a plain editor is not an unchanged file")
+	}
+}
+
+func TestDiscardTakesBackAnEmptyDirectory(t *testing.T) {
+	root := t.TempDir()
+	f := File{Path: filepath.Join(root, "host_vars", "web1", "vars.yml")}
+	if err := Prepare(f); err != nil {
+		t.Fatal(err)
+	}
+
+	// Nothing was written, so the directory that was made for it goes again.
+	Discard(f)
+	if _, err := os.Stat(filepath.Dir(f.Path)); !os.IsNotExist(err) {
+		t.Errorf("the empty directory was left behind: %v", err)
+	}
+
+	// A directory with a file in it stays, whether that file is the one that
+	// was just written or something that was already there.
+	if err := Prepare(f); err != nil {
+		t.Fatal(err)
+	}
+	write(t, f.Path, "a: 1\n")
+	Discard(f)
+	if _, err := os.Stat(f.Path); err != nil {
+		t.Errorf("a file that was written should be left alone: %v", err)
+	}
+}
+
+// exitErr is a real *exec.ExitError with the given status, which is the only
+// way to get one.
+func exitErr(t *testing.T, code int) error {
+	t.Helper()
+	err := exec.Command("sh", "-c", fmt.Sprintf("exit %d", code)).Run()
+	var exit *exec.ExitError
+	if !errors.As(err, &exit) {
+		t.Fatalf("want an exit error, got %v", err)
+	}
+	return err
 }

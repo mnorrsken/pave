@@ -68,6 +68,10 @@ for any UI change.
   until the update has run, so calling `a.queue` from a draw callback or a key
   handler deadlocks tview. `reflowDetail` runs in `SetAfterDrawFunc`: it sets
   the text itself and asks for the redraw from a goroutine.
+- **A dialog gives the keyboard back to a page, not to the tree.**
+  `closeModal` decides what gets focus when the last dialog closes, and the
+  playbook tree is only right when it is the page on screen. A new full screen
+  page needs a case there, or its arrow keys do nothing until tab is pressed.
 - **The editor takes the whole terminal.** `Application.Suspend` blocks the
   main loop until the editor exits, so nothing draws and anything on the run
   goroutine calling `queue` stalls until it comes back. The browser refuses to
