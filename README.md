@@ -52,7 +52,8 @@ directory of loose playbooks.
 go install github.com/mnorrsken/pave/cmd/pave@latest
 ```
 
-or `make build`, which puts it in `bin/`.
+or `make build`, which puts it in `bin/`, or `make install`, which builds for
+the machine it is run on and puts it in `/usr/local/bin` with sudo.
 
 ## Use
 
