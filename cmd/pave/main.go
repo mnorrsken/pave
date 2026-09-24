@@ -63,6 +63,10 @@ func run() error {
 		return nil
 	}
 
+	if v, ok := utf8CType(os.Getenv); ok {
+		os.Setenv("LC_CTYPE", v)
+	}
+
 	// The terminal is left to tview to open: it is the only path that reports
 	// a failure to do so.
 	app := ui.New(ui.Options{Root: dir, Config: cfg})
@@ -82,6 +86,26 @@ func rootDir(flagValue string, cfg *config.Config) (string, error) {
 		return filepath.Abs(config.Expand(candidate))
 	}
 	return os.Getwd()
+}
+
+// utf8CType is the LC_CTYPE to set when the locale is C or POSIX, which is
+// what a shell over ssh often gets when the server has no locale of its own.
+// tcell takes that for an ASCII terminal and draws every border as "?", when
+// the terminal on the other end is all but certainly UTF-8. Python makes the
+// same assumption in the same way (PEP 538), so ansible already runs with
+// it; an LC_ALL someone has set is left alone, as Python leaves it.
+func utf8CType(getenv func(string) string) (string, bool) {
+	if getenv("LC_ALL") != "" {
+		return "", false
+	}
+	ctype := getenv("LC_CTYPE")
+	if ctype == "" {
+		ctype = getenv("LANG")
+	}
+	if ctype != "C" && ctype != "POSIX" {
+		return "", false
+	}
+	return "C.UTF-8", true
 }
 
 func usage() {
