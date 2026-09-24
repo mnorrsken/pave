@@ -4,6 +4,16 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the versions
 follow [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.1] - 2026-09-25
+
+### Fixed
+
+- Over ssh, a shell often gets `LANG=C` or `POSIX` when the server has no
+  locale of its own, and tcell took that for an ASCII terminal: the focused
+  border came out as `???` and the others as `lqqk`. pave now sets
+  `LC_CTYPE=C.UTF-8` in that case, the same way Python does (PEP 538). An
+  `LC_ALL` that is set is left alone, so `LC_ALL=C` still shows the problem.
+
 ## [0.4.0] - 2026-09-06
 
 ### Added
