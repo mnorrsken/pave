@@ -6,115 +6,99 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"os/signal"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/creack/pty"
 )
 
-// Cmd is a command to run on a pty.
+// Cmd is a command to run on the terminal.
 type Cmd struct {
 	Path string
 	Args []string
 	Dir  string
 	Env  []string
-	Rows int
-	Cols int
 }
 
-// Session is a running command. The UI reads its output, writes the keys the
-// user types into it so ansible's own prompts work, and waits for it to end.
-type Session interface {
-	io.Reader
-	io.Writer
-	// Resize tells the child how big the output pane is, so ansible's line
-	// wrapping matches what is on screen.
-	Resize(rows, cols int) error
-	// Interrupt is ^C: it goes to the whole process group, the way a terminal
-	// would deliver it, so ansible's own handler runs.
-	Interrupt() error
-	// Kill ends the run without asking.
-	Kill() error
-	// Wait returns when the command has exited; the error carries the exit
-	// status.
-	Wait() error
-	Close() error
-}
+// Tee runs a command on the terminal pave was started on, its output going to
+// screen and copied to log as it arrives. The caller has to have given the
+// terminal back first, as for Interactive.
+//
+// The output goes through a pty, so the command still sees a terminal on
+// stdout and colours it the way it would anywhere else. Its stdin is the real
+// terminal, and so is its controlling terminal: a password prompt opens
+// /dev/tty and is answered there, without going anywhere near the log. ^C
+// reaches it the way it reaches anything run from a shell, and pave, in the
+// same process group, lets it decide what to do about it.
+func Tee(c Cmd, screen, log io.Writer) error {
+	ptmx, tty, err := pty.Open()
+	if err != nil {
+		return fmt.Errorf("open a pty: %w", err)
+	}
+	defer ptmx.Close()
+	// Not a terminal under a test; the pty keeps its default size then.
+	pty.InheritSize(os.Stdin, ptmx)
 
-// Runner starts commands. The UI holds one so tests can supply a fake instead
-// of really running ansible.
-type Runner interface {
-	Start(Cmd) (Session, error)
-}
-
-// PTYRunner runs commands for real, each on its own pty.
-type PTYRunner struct{}
-
-func (PTYRunner) Start(c Cmd) (Session, error) {
 	cmd := exec.Command(c.Path, c.Args...)
 	cmd.Dir = c.Dir
 	cmd.Env = c.Env
+	cmd.Stdin = os.Stdin
+	cmd.Stdout, cmd.Stderr = tty, tty
 
-	rows, cols := c.Rows, c.Cols
-	if rows <= 0 {
-		rows = 24
-	}
-	if cols <= 0 {
-		cols = 100
-	}
-	f, err := pty.StartWithSize(cmd, &pty.Winsize{Rows: uint16(rows), Cols: uint16(cols)})
+	sigs := make(chan os.Signal, 1)
+	signal.Notify(sigs, os.Interrupt, syscall.SIGWINCH)
+	defer signal.Stop(sigs)
+
+	err = cmd.Start()
+	tty.Close()
 	if err != nil {
-		return nil, fmt.Errorf("start %s: %w", c.Path, err)
+		return fmt.Errorf("%s: %w", c.Path, err)
 	}
-	return &ptySession{cmd: cmd, pty: f}, nil
+
+	copied := make(chan struct{})
+	go func() {
+		defer close(copied)
+		buf := make([]byte, 32<<10)
+		for {
+			n, err := ptmx.Read(buf)
+			if n > 0 {
+				screen.Write(buf[:n])
+				// A log that cannot be written is no reason to stop showing
+				// the run.
+				if log != nil {
+					log.Write(buf[:n])
+				}
+			}
+			if err != nil {
+				return // EIO once the last of the command's ends is closed
+			}
+		}
+	}()
+	exited := make(chan error, 1)
+	go func() { exited <- cmd.Wait() }()
+
+	for {
+		select {
+		case s := <-sigs:
+			if s == syscall.SIGWINCH {
+				pty.InheritSize(os.Stdin, ptmx)
+			}
+		case err := <-exited:
+			// Something the command started in the background can hold the
+			// pty open after it has gone; what it wrote itself is there
+			// well within this.
+			select {
+			case <-copied:
+			case <-time.After(time.Second):
+			}
+			return err
+		}
+	}
 }
 
-type ptySession struct {
-	cmd *exec.Cmd
-	pty *os.File
-}
-
-// Read turns the pty's end-of-child error into a plain EOF. A pty master
-// reports EIO once the last slave is gone, which is a normal exit here.
-func (s *ptySession) Read(p []byte) (int, error) {
-	n, err := s.pty.Read(p)
-	if err != nil && errors.Is(err, syscall.EIO) {
-		return n, io.EOF
-	}
-	return n, err
-}
-
-func (s *ptySession) Write(p []byte) (int, error) { return s.pty.Write(p) }
-
-func (s *ptySession) Resize(rows, cols int) error {
-	if rows <= 0 || cols <= 0 {
-		return nil
-	}
-	return pty.Setsize(s.pty, &pty.Winsize{Rows: uint16(rows), Cols: uint16(cols)})
-}
-
-func (s *ptySession) Interrupt() error { return s.signal(syscall.SIGINT) }
-
-func (s *ptySession) Kill() error { return s.signal(syscall.SIGKILL) }
-
-// signal delivers to the process group. pty.Start puts the child in its own
-// session, so its pid is also its group id, and ansible's forks get the
-// signal too.
-func (s *ptySession) signal(sig syscall.Signal) error {
-	if s.cmd.Process == nil {
-		return errors.New("not started")
-	}
-	if err := syscall.Kill(-s.cmd.Process.Pid, sig); err != nil {
-		return s.cmd.Process.Signal(sig)
-	}
-	return nil
-}
-
-func (s *ptySession) Wait() error { return s.cmd.Wait() }
-
-func (s *ptySession) Close() error { return s.pty.Close() }
-
-// ExitCode reports the status a finished Session exited with. It is -1 when
+// ExitCode reports the status a finished command exited with. It is -1 when
 // the command never ran.
 func ExitCode(err error) int {
 	if err == nil {

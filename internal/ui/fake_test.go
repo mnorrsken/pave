@@ -2,9 +2,10 @@ package ui
 
 import (
 	"context"
-	"errors"
+	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -20,150 +21,75 @@ import (
 	"github.com/mnorrsken/pave/internal/sshcert"
 )
 
-// fakeRunner stands in for ansible. It records what it was asked to run and
-// hands back a session the test drives by hand.
-type fakeRunner struct {
-	mu       sync.Mutex
-	cmds     []run.Cmd
-	sessions []*fakeSession
-	started  chan struct{}
-	// fail makes Start return an error instead of a session.
-	fail error
+// fakeTerminal stands in for the terminal pave gives back for a run. It
+// records what it was asked to run and to say, and a command does whatever
+// onRun says, which is how a test has ansible print something or fail.
+type fakeTerminal struct {
+	mu     sync.Mutex
+	cmds   []run.Cmd
+	said   []string
+	pauses int
+	onRun  func(c run.Cmd, log io.Writer) error
 }
 
-func newFakeRunner() *fakeRunner {
-	return &fakeRunner{started: make(chan struct{}, 8)}
-}
-
-func (r *fakeRunner) Start(c run.Cmd) (run.Session, error) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	r.cmds = append(r.cmds, c)
-	if r.fail != nil {
-		return nil, r.fail
+func (f *fakeTerminal) Run(c run.Cmd, log io.Writer) error {
+	f.mu.Lock()
+	f.cmds = append(f.cmds, c)
+	fn := f.onRun
+	f.mu.Unlock()
+	if fn != nil {
+		return fn(c, log)
 	}
-	s := newFakeSession()
-	r.sessions = append(r.sessions, s)
-	select {
-	case r.started <- struct{}{}:
-	default:
-	}
-	return s, nil
+	return nil
 }
 
-func (r *fakeRunner) lastCmd() run.Cmd {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	if len(r.cmds) == 0 {
+func (f *fakeTerminal) Say(msg string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.said = append(f.said, msg)
+}
+
+func (f *fakeTerminal) Pause() {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.pauses++
+}
+
+func (f *fakeTerminal) count() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return len(f.cmds)
+}
+
+func (f *fakeTerminal) lastCmd() run.Cmd {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if len(f.cmds) == 0 {
 		return run.Cmd{}
 	}
-	return r.cmds[len(r.cmds)-1]
+	return f.cmds[len(f.cmds)-1]
 }
 
-func (r *fakeRunner) count() int {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	return len(r.cmds)
+func (f *fakeTerminal) saidLines() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]string(nil), f.said...)
 }
 
-// session waits for the nth session to be started and returns it.
-func (r *fakeRunner) session(t *testing.T, n int) *fakeSession {
+func (f *fakeTerminal) pauseCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.pauses
+}
+
+// exitError is what a command that exits with code returns.
+func exitError(t *testing.T, code int) error {
 	t.Helper()
-	deadline := time.Now().Add(3 * time.Second)
-	for time.Now().Before(deadline) {
-		r.mu.Lock()
-		if len(r.sessions) > n {
-			s := r.sessions[n]
-			r.mu.Unlock()
-			return s
-		}
-		r.mu.Unlock()
-		time.Sleep(2 * time.Millisecond)
+	err := exec.Command("sh", "-c", fmt.Sprintf("exit %d", code)).Run()
+	if run.ExitCode(err) != code {
+		t.Fatalf("sh exited %v, want %d", err, code)
 	}
-	t.Fatalf("no session %d was started", n)
-	return nil
-}
-
-type fakeSession struct {
-	r *io.PipeReader
-	w *io.PipeWriter
-
-	mu         sync.Mutex
-	in         []byte
-	interrupts int
-	killed     bool
-	rows, cols int
-
-	once sync.Once
-	done chan struct{}
-	err  error
-}
-
-func newFakeSession() *fakeSession {
-	r, w := io.Pipe()
-	return &fakeSession{r: r, w: w, done: make(chan struct{})}
-}
-
-func (s *fakeSession) Read(p []byte) (int, error) { return s.r.Read(p) }
-
-func (s *fakeSession) Write(p []byte) (int, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.in = append(s.in, p...)
-	return len(p), nil
-}
-
-func (s *fakeSession) Resize(rows, cols int) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.rows, s.cols = rows, cols
-	return nil
-}
-
-func (s *fakeSession) Interrupt() error {
-	s.mu.Lock()
-	s.interrupts++
-	s.mu.Unlock()
-	return nil
-}
-
-func (s *fakeSession) Kill() error {
-	s.mu.Lock()
-	s.killed = true
-	s.mu.Unlock()
-	s.finish(errors.New("killed"))
-	return nil
-}
-
-func (s *fakeSession) Wait() error {
-	<-s.done
-	return s.err
-}
-
-func (s *fakeSession) Close() error { return s.r.Close() }
-
-// emit is output arriving from the command.
-func (s *fakeSession) emit(text string) { s.w.Write([]byte(text)) }
-
-// finish ends the command with an exit error, or nil for success.
-func (s *fakeSession) finish(err error) {
-	s.once.Do(func() {
-		s.err = err
-		s.w.Close()
-		close(s.done)
-	})
-}
-
-func (s *fakeSession) typed() string {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return string(s.in)
-}
-
-func (s *fakeSession) interruptCount() int {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.interrupts
+	return err
 }
 
 // testInventory is what the fake inventory loader returns.
@@ -183,7 +109,7 @@ type harness struct {
 	t       *testing.T
 	app     *App
 	screen  tcell.SimulationScreen
-	runner  *fakeRunner
+	term    *fakeTerminal
 	cert    sshcert.Status
 	stopped chan struct{}
 
@@ -192,6 +118,10 @@ type harness struct {
 	editMu sync.Mutex
 	edits  []run.Cmd
 	editFn func(run.Cmd) error
+
+	// logDir is where the run logs go: a temporary directory, never the
+	// fixture tree.
+	logDir string
 }
 
 // onEdit replaces what the fake editor does: write the file, fail, whatever
@@ -223,7 +153,8 @@ func newHarness(t *testing.T, tweak ...func(*Options)) *harness {
 	screen := tcell.NewSimulationScreen("UTF-8")
 	screen.SetSize(140, 44)
 
-	h := &harness{t: t, screen: screen, runner: newFakeRunner(), stopped: make(chan struct{})}
+	h := &harness{t: t, screen: screen, term: &fakeTerminal{}, stopped: make(chan struct{}),
+		logDir: filepath.Join(t.TempDir(), "logs")}
 	h.cert = sshcert.Status{Present: true, Principals: []string{"ansible-admin"},
 		ValidTo: time.Date(2026, 9, 2, 9, 0, 0, 0, time.Local)}
 
@@ -235,7 +166,6 @@ func newHarness(t *testing.T, tweak ...func(*Options)) *harness {
 		Root:   "testdata/tree",
 		Config: cfg,
 		Screen: screen,
-		Runner: h.runner,
 		Inventory: func(context.Context, inv.Source) (*inv.Inventory, error) {
 			return testInventory(), nil
 		},
@@ -254,8 +184,13 @@ func newHarness(t *testing.T, tweak ...func(*Options)) *harness {
 			}
 			return nil
 		},
-		Cert: func(string) (sshcert.Status, error) { return h.cert, nil },
-		Now:  func() time.Time { return time.Date(2026, 9, 1, 21, 0, 0, 0, time.Local) },
+		OnTerminal: func(session func(Terminal)) error {
+			session(h.term)
+			return nil
+		},
+		LogDir: h.logDir,
+		Cert:   func(string) (sshcert.Status, error) { return h.cert, nil },
+		Now:    func() time.Time { return time.Date(2026, 9, 1, 21, 0, 0, 0, time.Local) },
 	}
 	for _, f := range tweak {
 		f(&opts)

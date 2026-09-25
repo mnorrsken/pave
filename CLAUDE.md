@@ -3,8 +3,8 @@
 Terminal front end for running ansible playbooks, in Go on tview/tcell:
 project/playbook tree on the left, what the playbook would do on the right
 (plays, the hosts they resolve to, roles, modules), the run options in a
-dialog opened just before a run, the run itself streaming into an output pane.
-One static binary for linux and darwin.
+dialog opened just before a run, the run itself taking over the whole
+terminal. One static binary for linux and darwin.
 
 ## Commands
 
@@ -46,24 +46,12 @@ for any UI change.
 
 ## Things that will bite
 
-- **Only the main loop may touch tview state.** Output from a run is parked in
-  `outputPane.pending` on the run's goroutine and written into the TextView by
-  `flush` on the main loop. `GetText` and the box rectangles are not safe to
-  read from anywhere else; both have already caused a race.
 - **Escape the brackets.** ansible prints `PLAY [all]`, `TASK [role : task]`,
   `ok: [host]`, and a TextView with dynamic colours eats every one of them as
-  a colour tag. `outputPane.w` escapes first, then translates the ANSI codes;
-  do not swap the order. The same goes for anything else drawn through tview:
-  the tree markers and the checkbox strings in `theme.go` have no brackets in
-  them for exactly this reason.
-- **Only whole lines reach the output pane, and never a CRLF.** tview indexes
-  what is added to a TextView starting from the last line it already has, and
-  it gets a write boundary in the middle of a line, or on one of the pty's
-  `\r\n`s, wrong: the text is drawn shifted by a character and stays that way
-  until a resize. `newlineWriter` drops the `\r`, and `outputPane.take` holds
-  an unfinished line back until a tick has gone by with nothing new, which is
-  what still lets an ansible prompt through. `TestOutputSurvivesAReadEndingOnALineBreak`
-  guards both.
+  a colour tag. A run's output goes straight to the terminal and never meets
+  tview, but anything from a playbook shown in the detail pane goes through
+  `tview.Escape`, and the tree markers and the checkbox strings in `theme.go`
+  have no brackets in them for exactly this reason.
 - **Never queue onto the main loop from the main loop.** `QueueUpdate` blocks
   until the update has run, so calling `a.queue` from a draw callback or a key
   handler deadlocks tview. `reflowDetail` runs in `SetAfterDrawFunc`: it sets
@@ -72,10 +60,14 @@ for any UI change.
   `closeModal` decides what gets focus when the last dialog closes, and the
   playbook tree is only right when it is the page on screen. A new full screen
   page needs a case there, or its arrow keys do nothing until tab is pressed.
-- **The editor takes the whole terminal.** `Application.Suspend` blocks the
-  main loop until the editor exits, so nothing draws and anything on the run
-  goroutine calling `queue` stalls until it comes back. The browser refuses to
-  open a file while a run is going, which is what keeps that from happening.
+- **A run and the editor both take the whole terminal.** Both go through
+  `Application.Suspend`, which blocks the main loop until the command exits,
+  so nothing draws and nothing queued onto it runs until it comes back; being
+  synchronous on the main loop is also what keeps a run and the editor from
+  ever overlapping. A `^C` during a run reaches pave too, not just ansible:
+  `run.Tee` catches it with `signal.Notify`, never `signal.Ignore` — an
+  ignored `SIGINT` is inherited across `exec` and ansible would stop reacting
+  to `^C` itself.
 - **Size a form box with `formBoxHeight`.** tview draws a form's buttons on a
   row below its items with a blank one in between, and its default border
   padding adds two more; get it wrong and the buttons are simply not there,

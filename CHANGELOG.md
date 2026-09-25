@@ -4,6 +4,32 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the versions
 follow [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- Every playbook run is written to a log file under `.pave/logs` in the
+  root, plain text with the colours stripped. If it can't be written, the
+  run says so and goes ahead anyway.
+
+### Changed
+
+- Running a playbook, and signing a certificate, now take over the whole
+  terminal instead of drawing into a tview pane: pave gives the terminal
+  back, ansible's output goes straight to the real screen through a pty
+  (still coloured), and its vault, become and host key prompts are answered
+  there directly. `ctrl-c` reaches ansible the way it would in a shell,
+  and the terminal's own scrollback, search and copy work on the result.
+  This also does away with the output pane's own drawing glitches, such as
+  a full width `PLAY [...]` line coming out split in two.
+
+### Removed
+
+- `s`, which saved the output of a finished run — the terminal's own
+  scrollback and the log file cover that now.
+- `esc` leaving a run going in the background while `tab` came back to it.
+  A run now has the keyboard until it ends.
+
 ## [0.4.1] - 2026-09-25
 
 ### Fixed

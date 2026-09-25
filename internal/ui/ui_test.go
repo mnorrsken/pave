@@ -1,11 +1,14 @@
 package ui
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -91,9 +94,9 @@ func TestRunUsesTheFormOptions(t *testing.T) {
 	h.key(tcell.KeyF5)
 	h.waitFor("the confirmation", func() bool { return h.app.modalOpen() && !h.app.optionsFront() })
 	h.key(tcell.KeyEnter)
-	h.waitFor("the run to start", func() bool { return h.runner.count() == 1 })
+	h.waitFor("the run", func() bool { return h.term.count() == 1 })
 
-	cmd := h.runner.lastCmd()
+	cmd := h.term.lastCmd()
 	if got, want := strings.Join(cmd.Args, " "), "playbooks/onboard.yml --diff -v --limit kubeworkers"; got != want {
 		t.Errorf("args = %q, want %q", got, want)
 	}
@@ -103,7 +106,6 @@ func TestRunUsesTheFormOptions(t *testing.T) {
 	if !hasEnvSuffix(cmd.Env, "ANSIBLE_CONFIG=", filepath.Join("base", "ansible.cfg")) {
 		t.Errorf("env has no ANSIBLE_CONFIG for the project: %v", tail(cmd.Env, 3))
 	}
-	h.runner.session(t, 0).finish(nil)
 }
 
 // The options open on the run button, so a run that wants them as they are is
@@ -127,12 +129,11 @@ func TestConfirmationChoosesCheckMode(t *testing.T) {
 	h.confirmRun()
 	h.key(tcell.KeyTab)
 	h.key(tcell.KeyEnter)
-	h.waitFor("the run to start", func() bool { return h.runner.count() == 1 })
+	h.waitFor("the run", func() bool { return h.term.count() == 1 })
 
-	if got, want := strings.Join(h.runner.lastCmd().Args, " "), "playbooks/onboard.yml --check --diff"; got != want {
+	if got, want := strings.Join(h.term.lastCmd().Args, " "), "playbooks/onboard.yml --check --diff"; got != want {
 		t.Errorf("args = %q, want %q", got, want)
 	}
-	h.runner.session(t, 0).finish(nil)
 }
 
 // Cancelling the confirmation runs nothing and leaves the options open.
@@ -144,67 +145,35 @@ func TestConfirmationCanBackOut(t *testing.T) {
 	h.waitFor("the options to be back on top and have the keyboard", func() bool {
 		return h.app.optionsFront() && h.app.form.HasFocus()
 	})
-	if h.runner.count() != 0 {
-		t.Errorf("%d runs started, want none", h.runner.count())
+	if h.term.count() != 0 {
+		t.Errorf("%d runs started, want none", h.term.count())
 	}
 }
 
-func TestOutputStreamsAndTypingReachesAnsible(t *testing.T) {
+// A run has the terminal to itself: pave says what it runs and how it ended,
+// and waits for a key before drawing the interface over the result.
+func TestARunHappensOnTheTerminal(t *testing.T) {
 	h := newHarness(t)
 	h.runNow()
-	h.waitFor("the run to start", func() bool { return h.runner.count() == 1 })
-	sess := h.runner.session(t, 0)
+	h.waitFor("the run", func() bool { return h.term.pauseCount() == 1 })
 
-	sess.emit("PLAY [all] ****\nBECOME password: ")
-	h.waitFor("the output to arrive", func() bool {
-		// The brackets must survive: a TextView with dynamic colours would
-		// otherwise eat "[all]" as a colour tag.
-		return strings.Contains(h.app.output.text(), "PLAY [all] ****")
-	})
-
-	// While a run is going the keyboard belongs to the process.
-	h.press('y')
-	h.key(tcell.KeyEnter)
-	h.waitFor("the answer to reach the process", func() bool { return sess.typed() == "y\r" })
-
-	sess.finish(nil)
-	h.waitFor("the run to finish", func() bool { return !h.app.running })
+	said := h.term.saidLines()
+	if len(said) != 3 || !strings.HasPrefix(said[0], "ansible-playbook playbooks/onboard.yml") ||
+		said[1] != "ok" || !strings.HasPrefix(said[2], "log: ") {
+		t.Errorf("said %q, want the command, ok and the log", said)
+	}
 	if h.status() != "done" {
 		t.Errorf("status = %q, want done", h.status())
-	}
-	if !strings.Contains(h.app.output.text(), "ok") {
-		t.Errorf("output = %q, want pave's own ok line", h.app.output.text())
 	}
 }
 
 func TestFailedRunSaysSo(t *testing.T) {
 	h := newHarness(t)
+	h.term.onRun = func(run.Cmd, io.Writer) error { return exitError(t, 2) }
 	h.runNow()
-	h.waitFor("the run to start", func() bool { return h.runner.count() == 1 })
-
-	h.runner.session(t, 0).finish(errors.New("boom"))
 	h.waitFor("the failure to be reported", func() bool {
-		return !h.app.running && strings.Contains(h.app.status.text(), "exited")
+		return strings.Contains(h.app.status.text(), "ansible-playbook exited 2")
 	})
-}
-
-func TestCtrlCInterruptsThenKills(t *testing.T) {
-	h := newHarness(t)
-	h.runNow()
-	h.waitFor("the run to start", func() bool { return h.runner.count() == 1 })
-	sess := h.runner.session(t, 0)
-
-	h.key(tcell.KeyCtrlC)
-	h.waitFor("the interrupt", func() bool { return sess.interruptCount() == 1 })
-	if !strings.Contains(h.app.output.text(), "^C again to kill") {
-		t.Errorf("output = %q", h.app.output.text())
-	}
-
-	h.key(tcell.KeyCtrlC)
-	h.waitFor("the run to end", func() bool { return !h.app.running })
-	if h.status() != "interrupted" {
-		t.Errorf("status = %q", h.status())
-	}
 }
 
 func TestHostPickerFillsTheLimit(t *testing.T) {
@@ -256,10 +225,19 @@ func TestCredentialsBecomePasswordFiles(t *testing.T) {
 		h.app.form.setCredentials(credentials{User: "pi", Password: "s3cret", Become: "sud0", Target: "10.0.0.9"})
 	})
 
+	// The files have to be there while the command runs.
+	var during []string
+	h.term.onRun = func(c run.Cmd, _ io.Writer) error {
+		for _, flag := range []string{"--connection-password-file", "--become-password-file"} {
+			b, _ := os.ReadFile(valueAfter(c.Args, flag))
+			during = append(during, string(b))
+		}
+		return nil
+	}
 	h.runNow()
-	h.waitFor("the run to start", func() bool { return h.runner.count() == 1 })
+	h.waitFor("the run", func() bool { return h.term.pauseCount() == 1 })
 
-	args := h.runner.lastCmd().Args
+	args := h.term.lastCmd().Args
 	connFile := valueAfter(args, "--connection-password-file")
 	becomeFile := valueAfter(args, "--become-password-file")
 	if connFile == "" || becomeFile == "" {
@@ -272,19 +250,9 @@ func TestCredentialsBecomePasswordFiles(t *testing.T) {
 		t.Fatal("a password must never be on the command line")
 	}
 
-	b, err := os.ReadFile(connFile)
-	if err != nil {
-		t.Fatalf("read the password file: %v", err)
+	if want := []string{"s3cret\n", "sud0\n"}; !reflect.DeepEqual(during, want) {
+		t.Errorf("password files held %q during the run, want %q", during, want)
 	}
-	if string(b) != "s3cret\n" {
-		t.Errorf("password file = %q", b)
-	}
-	if fi, err := os.Stat(connFile); err == nil && fi.Mode().Perm() != 0o600 {
-		t.Errorf("mode = %v, want 0600", fi.Mode().Perm())
-	}
-
-	h.runner.session(t, 0).finish(nil)
-	h.waitFor("the run to finish", func() bool { return !h.app.running })
 
 	for _, f := range []string{connFile, becomeFile} {
 		if _, err := os.Stat(f); !os.IsNotExist(err) {
@@ -358,9 +326,9 @@ func TestSigningRunsSshKeygen(t *testing.T) {
 		h.key(tcell.KeyTab)
 	}
 	h.key(tcell.KeyEnter)
-	h.waitFor("ssh-keygen to be started", func() bool { return h.runner.count() > 0 })
+	h.waitFor("the signing to run", func() bool { return h.term.pauseCount() == 1 })
 
-	cmd := h.runner.lastCmd()
+	cmd := h.term.cmds[0]
 	if filepath.Base(cmd.Path) != "ssh-keygen" {
 		t.Fatalf("ran %q", cmd.Path)
 	}
@@ -370,50 +338,40 @@ func TestSigningRunsSshKeygen(t *testing.T) {
 			t.Errorf("args %q missing %q", args, want)
 		}
 	}
-	h.runner.session(t, 0).finish(nil)
+	for _, line := range h.term.saidLines() {
+		if strings.HasPrefix(line, "log: ") {
+			t.Errorf("signing was logged: %q", line)
+		}
+	}
 }
 
-func TestQuitDuringARunAsksFirst(t *testing.T) {
+// Every playbook run goes to a file of its own, as plain text: no colour
+// codes, no CRs, pave's own lines marked as in the pane.
+func TestARunIsLogged(t *testing.T) {
 	h := newHarness(t)
+	h.term.onRun = func(_ run.Cmd, log io.Writer) error {
+		io.WriteString(log, "\x1b[0;32mok: [master1]\x1b[0m\r\n")
+		io.WriteString(log, "PLAY RECAP ****\r\n")
+		return nil
+	}
 	h.runNow()
-	h.waitFor("the run to start", func() bool { return h.runner.count() == 1 })
+	h.waitFor("the run", func() bool { return h.term.pauseCount() == 1 })
 
-	// While the output pane has the keyboard everything typed goes to the
-	// process, so leave it first. The run keeps going.
-	h.key(tcell.KeyEscape)
-	h.waitFor("the tree", func() bool { return h.app.focusedOn(h.app.tree) })
-	h.press('q')
-	h.waitFor("the confirmation", func() bool { return h.app.modalOpen() })
-
-	h.key(tcell.KeyEscape)
-	h.sync()
-	h.runner.session(t, 0).finish(nil)
-	h.waitFor("the run to finish", func() bool { return !h.app.running })
-}
-
-func TestSaveLogWritesTheOutput(t *testing.T) {
-	h := newHarness(t)
-	h.runNow()
-	h.waitFor("the run to start", func() bool { return h.runner.count() == 1 })
-
-	sess := h.runner.session(t, 0)
-	sess.emit("PLAY RECAP ****\n")
-	sess.finish(nil)
-	h.waitFor("the run to finish", func() bool { return !h.app.running })
-
-	path := filepath.Join(t.TempDir(), "run.log")
-	h.press('s')
-	h.waitFor("the save prompt", func() bool { return h.app.modalOpen() })
-	h.key(tcell.KeyCtrlU) // clear the suggested file name
-	h.typeText(path)
-	h.key(tcell.KeyEnter)
-	h.waitFor("the file to be written", func() bool {
-		_, err := os.Stat(path)
-		return err == nil
-	})
-	b, _ := os.ReadFile(path)
-	if !strings.Contains(string(b), "PLAY RECAP") {
-		t.Errorf("log = %q", b)
+	b, err := os.ReadFile(filepath.Join(h.logDir, "onboard-20260901-210000.log"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	log := string(b)
+	for _, want := range []string{":: ansible-playbook ", "\nok: [master1]\nPLAY RECAP ****\n:: ok\n"} {
+		if !strings.Contains(log, want) {
+			t.Errorf("log %q lacks %q", log, want)
+		}
+	}
+	if strings.ContainsAny(log, "\x1b\r") {
+		t.Errorf("log %q has escape codes or CRs", log)
+	}
+	if _, err := os.Stat(filepath.Join(h.logDir, ".gitignore")); err != nil {
+		t.Errorf("no .gitignore in the log directory: %v", err)
 	}
 }
 
@@ -480,39 +438,6 @@ func tail(s []string, n int) []string {
 	return s[len(s)-n:]
 }
 
-// The real runner, end to end: a pty, ANSI colours and brackets, output in
-// the pane. No ansible needed — a script that prints what ansible prints.
-func TestRealRunnerStreamsColouredOutput(t *testing.T) {
-	dir := t.TempDir()
-	script := filepath.Join(dir, "fake-ansible-playbook")
-	body := "#!/bin/sh\n" +
-		"printf '\\033[0;32mPLAY [all] ***\\033[0m\\n'\n" +
-		"printf 'ok: [worker1]\\n'\n" +
-		"if [ -t 1 ]; then printf 'tty=yes\\n'; else printf 'tty=no\\n'; fi\n"
-	if err := os.WriteFile(script, []byte(body), 0o755); err != nil {
-		t.Fatal(err)
-	}
-
-	h := newHarness(t, func(o *Options) {
-		o.Runner = run.PTYRunner{}
-		o.Config.AnsiblePlaybookBin = script
-	})
-
-	h.runNow()
-	h.waitFor("the run to start", func() bool { return h.app.running })
-	h.waitFor("the run to finish", func() bool { return !h.app.running })
-
-	out := h.app.output.text()
-	for _, want := range []string{"PLAY [all] ***", "ok: [worker1]", "tty=yes"} {
-		if !strings.Contains(out, want) {
-			t.Errorf("output %q is missing %q", out, want)
-		}
-	}
-	if h.status() != "done" {
-		t.Errorf("status = %q", h.status())
-	}
-}
-
 // Integration: a real ansible-playbook, syntax-checking a real playbook with
 // the project's own ansible.cfg.
 func TestRealAnsibleSyntaxCheck(t *testing.T) {
@@ -523,15 +448,16 @@ func TestRealAnsibleSyntaxCheck(t *testing.T) {
 		t.Skip("no ansible-playbook on PATH")
 	}
 
-	h := newHarness(t, func(o *Options) { o.Runner = run.PTYRunner{} })
+	var screen bytes.Buffer
+	h := newHarness(t)
+	h.term.onRun = func(c run.Cmd, log io.Writer) error { return run.Tee(c, &screen, log) }
 	h.inspect(func() { h.app.form.input(fieldExtraArgs).SetText("--syntax-check") })
 
 	h.runNow()
-	h.waitFor("the syntax check to start", func() bool { return h.app.running })
 	// ansible is python: on a cold runner it takes seconds to get going.
-	h.waitWithin(2*time.Minute, "the syntax check to finish", func() bool { return !h.app.running })
+	h.waitWithin(2*time.Minute, "the syntax check", func() bool { return h.term.pauseCount() == 1 })
 	if h.status() != "done" {
-		t.Errorf("status = %q, output:\n%s", h.status(), h.app.output.text())
+		t.Errorf("status = %q, output:\n%s", h.status(), screen.String())
 	}
 }
 
@@ -668,76 +594,7 @@ func TestTheOptionsAreADialog(t *testing.T) {
 	if strings.Contains(h.screenText(), "check mode") {
 		t.Error("the options are still drawn after cancelling")
 	}
-	if h.runner.count() != 0 {
-		t.Errorf("cancelling started %d runs", h.runner.count())
+	if h.term.count() != 0 {
+		t.Errorf("cancelling started %d runs", h.term.count())
 	}
-}
-
-// A pty ends its lines with CRLF, and a read can stop anywhere — including on
-// one of them. tview indexes what has been added to the view starting from
-// the last line it already knows, and a CRLF sitting on that boundary comes
-// out wrong: the line after it loses its first character, or gains a space,
-// and stays that way until a resize makes it index the whole buffer again.
-// The pane turns the CRLFs into plain LF on the way in so there is nothing to
-// split.
-func TestOutputSurvivesAReadEndingOnALineBreak(t *testing.T) {
-	const stream = "PLAY [all] ***\r\nok: [web-01]\r\nchanged: [web-02]\r\n"
-
-	want := drawOutput(t, stream)
-	if !strings.Contains(want, "ok: [web-01]") {
-		t.Fatalf("the whole stream at once already draws wrong:\n%s", want)
-	}
-	// Every place a read could stop, including in the middle of a CRLF.
-	for i := 1; i < len(stream); i++ {
-		if got := drawOutput(t, stream[:i], stream[i:]); got != want {
-			t.Errorf("a read stopping after %q draws\n%s\nwant\n%s", stream[:i], got, want)
-		}
-	}
-}
-
-// drawOutput writes the given reads into an output pane, drawing after each
-// one the way a run does, and returns what ended up on the screen.
-func drawOutput(t *testing.T, reads ...string) string {
-	t.Helper()
-	const width, height = 40, 6
-
-	screen := tcell.NewSimulationScreen("UTF-8")
-	if err := screen.Init(); err != nil {
-		t.Fatal(err)
-	}
-	defer screen.Fini()
-	screen.SetSize(width, height)
-
-	pane := newOutputPane()
-	pane.SetBorder(false)
-	pane.SetRect(0, 0, width, height)
-	pane.ScrollToEnd()
-	draw := func() {
-		pane.Draw(screen)
-		screen.Show()
-	}
-	// The worst case the run can produce: a flush and a draw after every
-	// single read, and one more once the reads have stopped.
-	for _, r := range reads {
-		pane.push([]byte(r))
-		pane.flush()
-		draw()
-	}
-	pane.flush()
-	draw()
-
-	cells, w, h := screen.GetContents()
-	var b strings.Builder
-	for y := 0; y < h; y++ {
-		for x := 0; x < w; x++ {
-			r := cells[y*w+x].Runes
-			if len(r) == 0 || r[0] == 0 {
-				b.WriteRune(' ')
-				continue
-			}
-			b.WriteRune(r[0])
-		}
-		b.WriteRune('\n')
-	}
-	return b.String()
 }

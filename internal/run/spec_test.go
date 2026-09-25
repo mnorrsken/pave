@@ -1,6 +1,7 @@
 package run
 
 import (
+	"bytes"
 	"io"
 	"os"
 	"reflect"
@@ -158,48 +159,31 @@ func TestPasswordFile(t *testing.T) {
 	}
 }
 
-// The runner has to give a real terminal: ansible decides whether to colour
-// its output and whether it may prompt by asking whether stdout is a tty.
-func TestPTYRunnerIsATTY(t *testing.T) {
-	sess, err := PTYRunner{}.Start(Cmd{
+// ansible decides whether to colour its output by asking whether stdout is a
+// terminal, so Tee has to give it one, and the log has to get the same
+// output the screen does.
+func TestTeeGivesATerminalAndCopiesTheOutput(t *testing.T) {
+	var screen, log bytes.Buffer
+	err := Tee(Cmd{
 		Path: "sh",
-		Args: []string{"-c", "if [ -t 1 ]; then echo tty; else echo pipe; fi"},
+		Args: []string{"-c", "printf '\\033[0;32mok: [web]\\033[0m\\n'; if [ -t 1 ]; then echo tty; else echo pipe; fi; exit 3"},
 		Env:  os.Environ(),
-		Rows: 24, Cols: 80,
-	})
-	if err != nil {
-		t.Fatalf("start: %v", err)
+	}, &screen, &log)
+	if code := ExitCode(err); code != 3 {
+		t.Errorf("exit code = %d (%v), want 3", code, err)
 	}
-	out, _ := io.ReadAll(sess)
-	if err := sess.Wait(); err != nil {
-		t.Fatalf("wait: %v", err)
+	if want := "\x1b[0;32mok: [web]\x1b[0m\r\ntty\r\n"; screen.String() != want {
+		t.Errorf("screen = %q, want %q", screen.String(), want)
 	}
-	sess.Close()
-	if !strings.Contains(string(out), "tty") {
-		t.Errorf("output = %q, want it to see a tty", out)
+	if log.String() != screen.String() {
+		t.Errorf("log = %q, want what the screen got", log.String())
 	}
 }
 
-func TestPTYRunnerExitCodeAndInput(t *testing.T) {
-	sess, err := PTYRunner{}.Start(Cmd{
-		Path: "sh",
-		Args: []string{"-c", "read answer; echo got=$answer; exit 3"},
-		Env:  os.Environ(),
-	})
-	if err != nil {
-		t.Fatalf("start: %v", err)
-	}
-	if _, err := io.WriteString(sess, "yes\n"); err != nil {
-		t.Fatalf("write: %v", err)
-	}
-	out, _ := io.ReadAll(sess)
-	err = sess.Wait()
-	sess.Close()
-	if code := ExitCode(err); code != 3 {
-		t.Errorf("exit code = %d, want 3", code)
-	}
-	if !strings.Contains(string(out), "got=yes") {
-		t.Errorf("output = %q, want the answer we typed to reach the process", out)
+func TestTeeReportsACommandThatWillNotStart(t *testing.T) {
+	err := Tee(Cmd{Path: "/nonexistent/ansible-playbook"}, io.Discard, nil)
+	if err == nil || ExitCode(err) != -1 {
+		t.Errorf("err = %v, want a start failure", err)
 	}
 }
 

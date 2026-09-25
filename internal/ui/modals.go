@@ -50,22 +50,6 @@ func messageBox(title, message string, color tcell.Color, onClose func()) tview.
 	return m
 }
 
-// confirmBox asks before something that cannot be taken back.
-func confirmBox(title, message string, onYes, onNo func()) tview.Primitive {
-	m := tview.NewModal().
-		SetText(message).
-		AddButtons([]string{"no", "yes"}).
-		SetDoneFunc(func(_ int, label string) {
-			if label == "yes" {
-				onYes()
-				return
-			}
-			onNo()
-		})
-	m.SetTitle(" " + title + " ").SetBorder(true)
-	return m
-}
-
 // runConfirmBox is the last thing between the options and a run. Check mode
 // is a choice here rather than a checkbox in the form, so a dry run is one
 // key away and can never be left ticked from the last time.
@@ -89,29 +73,6 @@ func runConfirmBox(playbook string, onRun, onCheck, onCancel func()) tview.Primi
 	return m
 }
 
-// promptBox asks for one value. It is a bare input field rather than a form:
-// with one field, enter should mean "yes, that one" and not "move to the ok
-// button".
-func promptBox(title, label, value, hint string, onSubmit func(string), onCancel func()) tview.Primitive {
-	input := tview.NewInputField().SetLabel(label + ": ").SetText(value)
-	input.SetFieldBackgroundColor(colorBackground)
-	input.SetBackgroundColor(colorBackground)
-	input.SetDoneFunc(func(key tcell.Key) {
-		switch key {
-		case tcell.KeyEnter:
-			onSubmit(input.GetText())
-		case tcell.KeyEscape:
-			onCancel()
-		}
-	})
-	t := title
-	if hint != "" {
-		t += " — " + hint
-	}
-	input.SetBorder(true).SetTitle(" " + t + " — enter accepts, esc cancels ")
-	return input
-}
-
 // helpView is the key list. It is the only documentation the app itself has,
 // so it lists everything.
 func helpView(onClose func()) tview.Primitive {
@@ -129,7 +90,7 @@ const helpText = `
     enter          on a playbook: the run options
     /              filter the tree
     r              rescan the root for projects and playbooks
-    tab            move between the tree, the playbook and the output
+    tab            move between the tree and the playbook
 
   The pane on the right is what the playbook would do: every play, the hosts
   its pattern resolves to in the project's inventory, the roles it applies and
@@ -142,13 +103,14 @@ const helpText = `
     F2 or L        pick the limit out of the inventory
     F3             credentials for a host that has no certificate yet
     esc            close the options without running anything
-    ctrl-c         interrupt the run (a second one kills it)
-    s              save the output of a finished run to a file
-    esc            leave the output; the run keeps going, tab comes back
 
-  While a run is going, what you type goes to ansible: its vault, become and
-  host key prompts work as they do in a terminal. Page up/down and the arrow
-  keys stay here for scrolling.
+  A run has the terminal to itself, as if ansible-playbook had been typed in
+  a shell: its prompts, ctrl-c and the terminal's scrollback all work as they
+  do there. When it ends, esc, q or enter comes back here, and the status line
+  says how it went.
+
+  Every playbook run is also written to .pave/logs in the root, named after
+  the playbook and the time it started.
 
   [::b]the inventory[-::-]
     i              the inventory of the selected project: the files it is

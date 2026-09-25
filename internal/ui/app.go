@@ -3,11 +3,11 @@ package ui
 import (
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
 	"time"
-	"unicode/utf8"
 
 	"github.com/gdamore/tcell/v2"
 	"github.com/rivo/tview"
@@ -45,8 +45,6 @@ type Options struct {
 	// the only path that reports a failure to open it.
 	Screen tcell.Screen
 
-	// Runner starts commands. Defaults to run.PTYRunner{}.
-	Runner run.Runner
 	// Scan defaults to discover.Scan.
 	Scan func(root string, cfg *config.Config) ([]discover.Project, error)
 	// Inventory defaults to inv.Source.Load.
@@ -58,6 +56,13 @@ type Options struct {
 	// and running the command on it, which is the only thing a full screen
 	// editor can work with.
 	Edit func(c run.Cmd) error
+	// OnTerminal is where a run happens: it gives the terminal back, hands
+	// session a Terminal to run the commands on, and takes the terminal back
+	// once session returns. It defaults to the real one.
+	OnTerminal func(session func(Terminal)) error
+	// LogDir is where every playbook run is written. Defaults to .pave/logs
+	// under the root.
+	LogDir string
 	// Cert defaults to sshcert.Read.
 	Cert func(key string) (sshcert.Status, error)
 	// Now defaults to time.Now.
@@ -76,7 +81,6 @@ type App struct {
 	tree    *playbookTree
 	detail  *tview.TextView
 	preview *tview.TextView
-	output  *outputPane
 	status  *statusBar
 	filter  *tview.InputField
 
@@ -111,17 +115,6 @@ type App struct {
 	invLayouts map[string]*invfile.Layout
 	cert       sshcert.Status
 
-	// session is the command currently running, and running says whether the
-	// keyboard belongs to it.
-	session     run.Session
-	running     bool
-	interrupted bool
-	// lastRun names what the output pane is showing, for the log file name.
-	lastRun string
-	// sessionRows and sessionCols are the size the running command was last
-	// told about.
-	sessionRows, sessionCols int
-
 	// detailDrawnAt is the width the detail pane was last laid out for, so a
 	// resize can lay it out again.
 	detailDrawnAt int
@@ -135,9 +128,6 @@ type App struct {
 func New(opts Options) *App {
 	if opts.Config == nil {
 		opts.Config = &config.Config{}
-	}
-	if opts.Runner == nil {
-		opts.Runner = run.PTYRunner{}
 	}
 	if opts.Scan == nil {
 		opts.Scan = discover.Scan
@@ -157,6 +147,9 @@ func New(opts Options) *App {
 	}
 	if opts.Now == nil {
 		opts.Now = time.Now
+	}
+	if opts.LogDir == "" {
+		opts.LogDir = filepath.Join(opts.Root, ".pave", "logs")
 	}
 
 	a := &App{
@@ -190,7 +183,6 @@ func New(opts Options) *App {
 	a.formPreview.SetBackgroundColor(colorBackground)
 	a.runOptions = center(runOptionsBox(a.form, a.formPreview), optionsWidth, runOptionsHeight)
 
-	a.output = newOutputPane()
 	a.status = newStatusBar()
 
 	a.invView = newInventoryView()
@@ -218,7 +210,6 @@ func New(opts Options) *App {
 
 	a.body = tview.NewPages().
 		AddPage("browse", browse, true, true).
-		AddPage("output", a.output, true, false).
 		AddPage("inventory", a.invView, true, false)
 
 	main := tview.NewFlex().SetDirection(tview.FlexRow).
@@ -228,14 +219,14 @@ func New(opts Options) *App {
 
 	a.pages = tview.NewPages().AddPage("main", main, true, true)
 	a.SetRoot(a.pages, true).SetInputCapture(a.globalKeys)
-	a.SetAfterDrawFunc(func(tcell.Screen) {
-		a.resizeSession()
-		a.reflowDetail()
-	})
+	a.SetAfterDrawFunc(func(tcell.Screen) { a.reflowDetail() })
 	a.SetFocus(a.tree)
 
 	if a.opts.Edit == nil {
 		a.opts.Edit = a.suspendAndRun
+	}
+	if a.opts.OnTerminal == nil {
+		a.opts.OnTerminal = a.suspendForRun
 	}
 
 	a.rescan()
@@ -394,10 +385,6 @@ type step struct {
 // confirmRun asks the last question before a run: for real, or as a dry run.
 // It is where check mode is chosen, so the form has no checkbox for it.
 func (a *App) confirmRun() {
-	if a.running {
-		a.status.warn("a run is already going")
-		return
-	}
 	pb := a.tree.currentPlaybook()
 	if pb == nil {
 		a.status.warn("select a playbook first")
@@ -419,10 +406,6 @@ func (a *App) confirmRun() {
 // runSelected starts the run the form describes. check is what the
 // confirmation answered.
 func (a *App) runSelected(check bool) {
-	if a.running {
-		a.status.warn("a run is already going")
-		return
-	}
 	spec, ok := a.currentSpec()
 	if !ok {
 		a.status.warn("select a playbook first")
@@ -431,6 +414,7 @@ func (a *App) runSelected(check bool) {
 	spec.Check = check
 
 	var cleanup []func()
+	defer func() { a.cleanupAll(cleanup) }()
 	creds := a.form.creds
 	if !creds.Ask {
 		if creds.Password != "" {
@@ -445,7 +429,6 @@ func (a *App) runSelected(check bool) {
 		if creds.Become != "" {
 			path, err := run.PasswordFile(creds.Become)
 			if err != nil {
-				a.cleanupAll(cleanup)
 				a.status.errorf("%v", err)
 				return
 			}
@@ -455,116 +438,100 @@ func (a *App) runSelected(check bool) {
 	}
 
 	a.closeRunOptions()
-	a.lastRun = spec.Playbook
-	a.start(spec.Playbook, []step{{
+	// A log that cannot be written is no reason not to run: the run says so
+	// and goes ahead.
+	log, logErr := openRunLog(a.opts.LogDir, spec.Playbook, a.opts.Now())
+	a.play([]step{{
 		label: spec.Preview(),
 		cmd:   spec.Cmd(a.opts.Config.RunEnv()),
-	}}, cleanup)
+	}}, log, logErr)
 }
 
-// start shows the output pane and runs the steps one after another.
-func (a *App) start(title string, steps []step, cleanup []func()) {
-	a.output.reset(title)
-	a.body.SwitchToPage("output")
-	a.SetFocus(a.output)
-	a.running = true
-	a.interrupted = false
-	a.refreshHints()
-	a.status.info("running")
-	// The pane's size is read here, on the main loop: its rectangle belongs to
-	// the drawing goroutine and must not be touched from the run's.
-	rows, cols := a.outputSize()
-	go a.runSteps(steps, cleanup, rows, cols)
+// Terminal is the terminal pave was started on, given back for a run.
+type Terminal interface {
+	// Run runs a command on it, its output copied to log as well.
+	Run(c run.Cmd, log io.Writer) error
+	// Say prints one of pave's own lines.
+	Say(msg string)
+	// Pause waits for the key that goes back to the interface.
+	Pause()
 }
 
-func (a *App) runSteps(steps []step, cleanup []func(), rows, cols int) {
-	defer a.cleanupAll(cleanup)
-
+// play runs the steps on the terminal one after another, stopping at the
+// first that fails unless it is allowed to, with log getting a copy when there
+// is one. The run is ansible's alone while it lasts: its prompts, its colours,
+// ^C and the scrollback all work as they do in a shell. Once it is over it
+// waits for a key, so the result can be read before the interface comes back
+// over it, and the status bar says how it went.
+func (a *App) play(steps []step, log *runLog, logErr error) {
 	var failure string
-
-	for _, st := range steps {
-		st := st
-		a.queue(func() { a.output.banner(colorAccent, "%s", st.label) })
-
-		st.cmd.Rows, st.cmd.Cols = rows, cols
-		sess, err := a.opts.Runner.Start(st.cmd)
-		if err != nil {
-			failure = err.Error()
-			a.queue(func() { a.output.banner(colorError, "%s", err.Error()) })
-			break
+	err := a.opts.OnTerminal(func(t Terminal) {
+		// note is one of pave's own lines, on the terminal and in the log.
+		note := func(format string, args ...any) {
+			msg := fmt.Sprintf(format, args...)
+			t.Say(msg)
+			log.line(msg)
 		}
-		a.setSession(sess)
-		err = a.stream(sess)
-		a.setSession(nil)
-
-		code := run.ExitCode(err)
-		switch {
-		case err == nil:
-			a.queue(func() { a.output.banner(colorOK, "ok") })
-		case st.allowFail:
-			a.queue(func() { a.output.banner(colorDim, "exit %d, carrying on", code) })
-		default:
-			failure = fmt.Sprintf("%s exited %d", filepath.Base(st.cmd.Path), code)
-			msg := failure
-			a.queue(func() { a.output.banner(colorError, "%s", msg) })
+		if logErr != nil {
+			t.Say("not logged: " + logErr.Error())
 		}
-		if err != nil && !st.allowFail {
-			break
-		}
-	}
-
-	a.queue(func() {
-		a.running = false
-		a.refreshHints()
-		switch {
-		case a.interrupted:
-			a.status.warn("interrupted")
-		case failure != "":
-			a.status.errorf("%s", failure)
-		default:
-			a.status.ok("done")
-		}
-		a.reloadCert()
-	})
-}
-
-// stream parks a session's output for the main loop to draw and returns what
-// the command exited with.
-func (a *App) stream(sess run.Session) error {
-	// A ticker rather than a flush per read: ansible writes line by line, and
-	// one redraw per line is wasted work on a play with a thousand tasks.
-	stop := make(chan struct{})
-	defer close(stop)
-	go func() {
-		t := time.NewTicker(flushEvery)
-		defer t.Stop()
-		for {
-			select {
-			case <-stop:
-				return
-			case <-t.C:
-				if !a.output.empty() {
-					a.queue(a.output.flush)
-				}
+		for _, st := range steps {
+			note("%s", st.label)
+			err := t.Run(st.cmd, log)
+			code := run.ExitCode(err)
+			switch {
+			case err == nil:
+				note("ok")
+			case code < 0:
+				failure = err.Error()
+				note("%s", failure)
+			case st.allowFail:
+				note("exit %d, carrying on", code)
+			default:
+				failure = fmt.Sprintf("%s exited %d", filepath.Base(st.cmd.Path), code)
+				note("%s", failure)
+			}
+			if err != nil && (code < 0 || !st.allowFail) {
+				break
 			}
 		}
-	}()
-
-	buf := make([]byte, 16<<10)
-	for {
-		n, rerr := sess.Read(buf)
-		if n > 0 && a.output.push(buf[:n]) {
-			a.queue(a.output.flush)
+		if log != nil {
+			t.Say("log: " + shortPath(log.path))
 		}
-		if rerr != nil {
-			break
+		t.Pause()
+	})
+	if log != nil {
+		if cerr := log.Close(); cerr != nil && err == nil {
+			err = fmt.Errorf("log: %w", cerr)
 		}
 	}
-	err := sess.Wait()
-	sess.Close()
-	a.queue(a.output.drain)
-	return err
+	switch {
+	case err != nil:
+		a.showError("run", err)
+	case failure != "":
+		a.status.errorf("%s", failure)
+	default:
+		a.status.ok("done")
+	}
+	a.reloadCert()
 }
+
+// suspendForRun is the real OnTerminal: tview hands the terminal back for the
+// length of the session and draws everything again afterwards.
+func (a *App) suspendForRun(session func(Terminal)) error {
+	if !a.Suspend(func() { session(realTerminal{}) }) {
+		return fmt.Errorf("the interface would not release the terminal")
+	}
+	return nil
+}
+
+type realTerminal struct{}
+
+func (realTerminal) Run(c run.Cmd, log io.Writer) error { return run.Tee(c, os.Stdout, log) }
+
+func (realTerminal) Say(msg string) { fmt.Printf("\x1b[1;36m:: %s\x1b[0m\n", msg) }
+
+func (realTerminal) Pause() { run.Pause("esc: back to pave") }
 
 // reflowDetail lays the detail pane out again once the terminal has told it
 // how wide it is. It runs from the draw, which is the main loop, so the text
@@ -580,39 +547,12 @@ func (a *App) reflowDetail() {
 	go a.queue(func() {})
 }
 
-// resizeSession keeps the running command's idea of the terminal the same
-// size as the pane it is being drawn into, so ansible wraps its lines where
-// the user can see the wrap.
-func (a *App) resizeSession() {
-	if !a.running || a.session == nil {
-		return
-	}
-	rows, cols := a.outputSize()
-	if rows == a.sessionRows && cols == a.sessionCols {
-		return
-	}
-	a.sessionRows, a.sessionCols = rows, cols
-	a.session.Resize(rows, cols)
-}
-
 // detailWidth is how much room the detail pane had at the last draw, which is
 // what its lines are laid out for. It is zero before the first draw, and
 // playbookDetail falls back to a sensible width then.
 func (a *App) detailWidth() int {
 	_, _, w, _ := a.detail.GetInnerRect()
 	return w
-}
-
-func (a *App) outputSize() (rows, cols int) {
-	_, _, w, h := a.output.GetInnerRect()
-	if w <= 0 || h <= 0 {
-		return 24, 100
-	}
-	return h, w
-}
-
-func (a *App) setSession(s run.Session) {
-	a.queue(func() { a.session = s })
 }
 
 func (a *App) cleanupAll(cleanup []func()) {
@@ -630,22 +570,6 @@ func (a *App) queue(f func()) {
 	default:
 	}
 	a.Application.QueueUpdateDraw(f)
-}
-
-// interrupt is ^C during a run: the first one asks ansible to stop, a second
-// one does not ask.
-func (a *App) interrupt() {
-	if a.session == nil {
-		return
-	}
-	if a.interrupted {
-		a.output.banner(colorError, "killing it")
-		a.session.Kill()
-		return
-	}
-	a.interrupted = true
-	a.output.banner(colorWarn, "interrupt sent, ^C again to kill")
-	a.session.Interrupt()
 }
 
 // --- dialogs ----------------------------------------------------------------
@@ -678,8 +602,6 @@ func (a *App) closeModal(name string) {
 		// The playbook tree is not on the screen while the browser is: giving
 		// it the keyboard would leave the arrow keys doing nothing visible.
 		a.SetFocus(a.invView.tree)
-	case a.running:
-		a.SetFocus(a.output)
 	default:
 		a.SetFocus(a.tree)
 	}
@@ -719,10 +641,6 @@ func (a *App) openCredentials() {
 // the run about to start, so they are asked for then rather than sitting in
 // the layout.
 func (a *App) openRunOptions() {
-	if a.running {
-		a.status.warn("a run is already going")
-		return
-	}
 	if a.tree.currentPlaybook() == nil {
 		a.status.warn("select a playbook first")
 		return
@@ -851,10 +769,6 @@ func (a *App) ensureInventory(p *discover.Project) {
 // Both the membership and the layout come from ansible, so this is as slow as
 // reading an inventory the first time and nothing at all afterwards.
 func (a *App) openInventory() {
-	if a.running {
-		a.status.warn("wait for the run to finish")
-		return
-	}
 	ref := a.tree.current()
 	if ref == nil || ref.project == nil {
 		a.status.warn("select a playbook first")
@@ -943,10 +857,6 @@ func (a *App) layout(p *discover.Project, reload bool) (*invfile.Layout, error) 
 // editor has it, and looks at the tree again afterwards: the file may not
 // have existed a moment ago, and its contents decide how it opens next time.
 func (a *App) editFile(f invfile.File) {
-	if a.running {
-		a.status.warn("wait for the run to finish")
-		return
-	}
 	if err := invfile.Prepare(f); err != nil {
 		a.showError("edit", err)
 		return
@@ -978,13 +888,9 @@ func (a *App) suspendAndRun(c run.Cmd) error {
 	return err
 }
 
-// openCertForm signs a new certificate. The commands run in the output pane
-// like everything else, so an encrypted CA key can ask for its passphrase.
+// openCertForm signs a new certificate. The commands run on the terminal like
+// a playbook, so an encrypted CA key asks for its passphrase there.
 func (a *App) openCertForm() {
-	if a.running {
-		a.status.warn("wait for the run to finish")
-		return
-	}
 	c := a.opts.Config.SSHCert
 	form := tview.NewForm()
 	compactForm(form)
@@ -1020,7 +926,7 @@ func (a *App) openCertForm() {
 		for _, s := range steps {
 			out = append(out, step{label: s.Label, cmd: s.Cmd, allowFail: s.AllowFail})
 		}
-		a.start("signing a certificate", out, nil)
+		a.play(out, nil, nil)
 	})
 	form.AddButton("cancel", func() { a.closeModal(name) })
 	form.SetCancelFunc(func() { a.closeModal(name) })
@@ -1043,33 +949,6 @@ func (a *App) onboard() {
 		}
 	}
 	a.openCredentials()
-}
-
-func (a *App) saveLog() {
-	if a.running {
-		a.status.warn("wait for the run to finish")
-		return
-	}
-	if a.output.text() == "" {
-		a.status.warn("nothing to save")
-		return
-	}
-	def := savePath(a.lastRun, a.opts.Now())
-	var name string
-	name = a.openModal(center(promptBox("save the output", "file", def, "",
-		func(path string) {
-			a.closeModal(name)
-			if path = strings.TrimSpace(path); path == "" {
-				return
-			}
-			if err := os.WriteFile(config.Expand(path), []byte(a.output.text()), 0o644); err != nil {
-				a.showError("save", err)
-				return
-			}
-			a.status.ok("written to %s", path)
-		},
-		func() { a.closeModal(name) },
-	), 70, 7))
 }
 
 func (a *App) openFilter() {
@@ -1113,30 +992,12 @@ func (a *App) globalKeys(ev *tcell.EventKey) *tcell.EventKey {
 		return a.inventoryKeys(ev)
 	}
 
-	// While something is running the output pane is ansible's keyboard.
-	if a.running && a.focusedOn(a.output) {
-		return a.outputKeys(ev)
-	}
-
-	// ^C never quits out from under a run.
-	if ev.Key() == tcell.KeyCtrlC && a.running {
-		a.interrupt()
-		return nil
-	}
-
 	switch ev.Key() {
 	case tcell.KeyTab:
 		a.focusNext()
 		return nil
 	case tcell.KeyBacktab:
 		a.focusNext()
-		return nil
-	case tcell.KeyEscape:
-		if a.focusedOn(a.output) {
-			a.body.SwitchToPage("browse")
-			a.SetFocus(a.tree)
-			a.refreshHints()
-		}
 		return nil
 	case tcell.KeyEnter:
 		if a.focusedOn(a.tree) {
@@ -1192,11 +1053,6 @@ func (a *App) globalKeys(ev *tcell.EventKey) *tcell.EventKey {
 	case 'o':
 		a.onboard()
 		return nil
-	case 's':
-		if a.focusedOn(a.output) {
-			a.saveLog()
-			return nil
-		}
 	}
 	return ev
 }
@@ -1251,69 +1107,7 @@ func (a *App) inventoryKeys(ev *tcell.EventKey) *tcell.EventKey {
 	return ev
 }
 
-// outputKeys is what happens while a command is running: everything that is
-// not a scrolling key goes to the process, so ansible's prompts work.
-func (a *App) outputKeys(ev *tcell.EventKey) *tcell.EventKey {
-	switch ev.Key() {
-	case tcell.KeyCtrlC:
-		a.interrupt()
-		return nil
-	case tcell.KeyEscape:
-		// Escape is the way out of a run that is still going: the run keeps
-		// going, tab comes back to it. Nothing ansible prompts for needs an
-		// escape key.
-		a.body.SwitchToPage("browse")
-		a.SetFocus(a.tree)
-		a.refreshHints()
-		return nil
-	}
-	if !a.output.scrollKey(ev) {
-		return ev
-	}
-	if a.session == nil {
-		return nil
-	}
-	if b := keyBytes(ev); len(b) > 0 {
-		a.session.Write(b)
-	}
-	return nil
-}
-
-// keyBytes is what a terminal would have sent for this key.
-func keyBytes(ev *tcell.EventKey) []byte {
-	switch ev.Key() {
-	case tcell.KeyRune:
-		buf := make([]byte, utf8.UTFMax)
-		return buf[:utf8.EncodeRune(buf, ev.Rune())]
-	case tcell.KeyEnter:
-		return []byte{'\r'}
-	case tcell.KeyTab:
-		return []byte{'\t'}
-	case tcell.KeyBackspace, tcell.KeyBackspace2:
-		return []byte{0x7f}
-	}
-	// The control keys are their own byte, which is how ^D ends a prompt.
-	if k := ev.Key(); k > 0 && k <= 0x1f {
-		return []byte{byte(k)}
-	}
-	return nil
-}
-
-func (a *App) quit() {
-	if a.running && a.session != nil {
-		var name string
-		name = a.openModal(center(confirmBox("quit",
-			"A run is going. Quitting kills it.",
-			func() {
-				a.session.Kill()
-				a.Stop()
-			},
-			func() { a.closeModal(name) },
-		), 60, 9))
-		return
-	}
-	a.Stop()
-}
+func (a *App) quit() { a.Stop() }
 
 func (a *App) focusedOn(p tview.Primitive) bool {
 	focus := a.GetFocus()
@@ -1330,10 +1124,6 @@ func (a *App) focusedOn(p tview.Primitive) bool {
 func (a *App) focusNext() {
 	switch {
 	case a.focusedOn(a.tree):
-		if name, _ := a.body.GetFrontPage(); name == "output" {
-			a.SetFocus(a.output)
-			break
-		}
 		a.SetFocus(a.detail)
 	case a.focusedOn(a.detail):
 		a.SetFocus(a.tree)
@@ -1353,10 +1143,6 @@ func (a *App) refreshHints() {
 		a.status.setKeys("[inventory] enter open a file or a heading · r reread it · tab next pane · esc back")
 	case a.filtering:
 		a.status.setKeys("[filter] type to narrow the tree · enter keep it · esc clear")
-	case a.running && a.focusedOn(a.output):
-		a.status.setKeys("[run] what you type goes to ansible · ^C interrupt · pgup/pgdn scroll · esc leave it running")
-	case a.focusedOn(a.output):
-		a.status.setKeys("[output] esc back · s save · pgup/pgdn scroll · ? help")
 	case a.focusedOn(a.detail):
 		a.status.setKeys("[playbook] up/down scroll · enter run it · i reload the inventory · tab back to the tree")
 	default:

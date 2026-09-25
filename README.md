@@ -86,13 +86,19 @@ Press `?` inside for the keys. The short version:
 | `c` | sign a short lived certificate and load it into ssh-agent |
 | `o` | onboard: the configured playbook with the credentials dialog open |
 | `/` `r` `i` | filter the tree, rescan it, reload the inventory |
-| `^C` | interrupt the run; again to kill it |
-| `esc` | leave the output (the run keeps going); `tab` comes back |
-| `s` | save the output of a finished run |
 
-While a run is going, what you type goes to ansible: its vault, become and
-host key prompts work exactly as they do in a terminal. The page and arrow
-keys stay with pave for scrolling.
+Running a playbook, or signing a certificate with `c`, gives the terminal to
+the command itself, the way it would work typed into a shell: pave prints
+`:: ansible-playbook …`, ansible's own output follows in colour, and its
+vault, become and host key prompts are answered right there. `ctrl-c` reaches
+ansible the way it does in a shell rather than pave. When it ends, pave prints
+`:: ok` or `:: ansible-playbook exited N` and the log path, and waits for
+`esc`, `q` or `enter` before drawing the interface again.
+
+Every playbook run is also written to `.pave/logs` in the root, plain text
+with the colour codes stripped, named after the playbook and the time it
+started. If it can't be written, the run says so and goes ahead anyway.
+Signing a certificate is not logged.
 
 ## Configuration
 
@@ -149,7 +155,7 @@ temporary file passed as `--connection-password-file` /
 `--become-password-file`, removed as soon as the run ends. It never goes on
 the command line, where every process listing on the machine would see it.
 If you would rather pave never held it at all, tick "let ansible prompt
-instead" and answer in the output pane.
+instead" and answer it on the terminal once the run starts.
 
 A killed process (`kill -9`, a crash) can leave the temporary file behind;
 nothing else does.
