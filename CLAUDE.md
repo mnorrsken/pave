@@ -10,6 +10,8 @@ terminal. One static binary for linux and darwin.
 
 - `make build` (to `bin/`), `make run`, `make test`, `make race`, `make vet`,
   `make fmt`, `make lint`
+- `make install`: build for this machine and put it in `/usr/local/bin` with
+  sudo, where the release notes tell people to put a downloaded binary
 - `make it`: the integration tests (`PAVE_IT=1 go test ./...`). They need a
   real `ansible-inventory` and `ansible-playbook` on PATH.
 - `make dist`: the same cross-compile the release does. No windows target: the
@@ -86,3 +88,6 @@ for any UI change.
   that exact section for the release notes and fails without it.
 - Pre-1.0: breaking changes are a minor bump.
 - Release commit: `Add <feature> (vX.Y.Z)`. Tag `vX.Y.Z`, push main and the tag.
+- `ci.yml` runs on push/PR; `release.yml` on `v*` tags runs vet, race and the
+  integration tests on linux and macOS, then cross-compiles, writes
+  `checksums.txt` and creates the GitHub release.
