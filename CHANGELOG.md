@@ -4,6 +4,16 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the versions
 follow [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.1] - 2026-10-09
+
+### Changed
+
+- The release workflow now runs vet and the race tests on macOS as well as
+  linux before it publishes. The integration tests still run on linux only.
+- The release notes pin `go install` to the released version and say to put
+  a downloaded binary in `/usr/local/bin` with `sudo install`, which is where
+  `make install` puts it, then check it against `checksums.txt`.
+
 ## [0.5.0] - 2026-09-25
 
 ### Added
