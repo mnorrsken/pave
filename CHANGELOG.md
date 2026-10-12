@@ -4,6 +4,21 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the versions
 follow [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.0] - 2026-10-12
+
+### Added
+
+- The inventory view previews the selected file in the right pane. A plain
+  file shows its text, cut at 256 KiB on a whole line. A sops file (YAML or
+  JSON) shows only its keys, nested as in the file, with no values and no
+  `sops:` metadata. An ansible-vault file says it is encrypted and shows
+  nothing.
+
+### Changed
+
+- A file that does not exist yet keeps the old text in the right pane. For an
+  existing file it no longer says "state exists" or which editor opens it.
+
 ## [0.5.1] - 2026-10-09
 
 ### Changed

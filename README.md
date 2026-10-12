@@ -44,7 +44,9 @@ or cancel. A dry run is one key away and can never be left ticked from the
 last time.
 
 `i` opens the inventory: the files it is read from, its groups and its hosts,
-each with the files that set variables for it. Enter on one opens it in your
+each with the files that set variables for it. The right pane previews the
+selected file: the text of a plain file, only the keys of a sops file (the
+values stay encrypted), and no preview for an ansible-vault file. Enter on one opens it in your
 editor — pave gives the terminal back while it has it, so a full screen editor
 works as it does anywhere else. A sops or ansible-vault file goes through
 `sops` or `ansible-vault edit`, which decrypt it, run the editor on the plain
