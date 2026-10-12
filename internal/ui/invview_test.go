@@ -29,13 +29,12 @@ func TestInventoryBrowserShowsTheFilesAndTheMembership(t *testing.T) {
 		}
 	}
 
-	// It opens on the inventory file itself, and says what opening it would
-	// do rather than leaving the pane empty.
+	// It opens on the inventory file itself, and shows what is in it.
 	ref := h.currentInvRef()
 	if ref == nil || ref.file == nil || filepath.Base(ref.file.Path) != "hosts.yml" {
 		t.Fatalf("the cursor starts on %+v, want the inventory file", ref)
 	}
-	if detail := h.app.invView.detail.GetText(true); !strings.Contains(detail, "the editor") {
+	if detail := h.app.invView.detail.GetText(true); !strings.Contains(detail, "kubemasters:\n      hosts:") {
 		t.Errorf("detail = %q", detail)
 	}
 
@@ -51,6 +50,30 @@ func TestInventoryBrowserLeavesTheSopsRulesAlone(t *testing.T) {
 	h.sync()
 	if strings.Contains(h.screenText(), ".sops.yaml") {
 		t.Errorf("the sops creation rules are listed as a file:\n%s", h.screenText())
+	}
+}
+
+// A sops file shows its keys and none of its ciphertext or metadata.
+func TestInventoryBrowserShowsOnlyTheKeysOfASopsFile(t *testing.T) {
+	h := newHarness(t)
+	h.openInventory()
+
+	h.selectInvNode("all")
+	h.key(tcell.KeyEnter)
+	h.waitFor("the files of the group", func() bool {
+		return strings.Contains(h.screenText(), "vault.sops.yml")
+	})
+	h.selectInvNode("vault.sops.yml")
+	h.sync()
+
+	detail := h.app.invView.detail.GetText(true)
+	if !strings.Contains(detail, "ansible_password") {
+		t.Errorf("the key is not shown:\n%s", detail)
+	}
+	for _, leak := range []string{"ENC", "lastmodified"} {
+		if strings.Contains(detail, leak) {
+			t.Errorf("the preview shows %q:\n%s", leak, detail)
+		}
 	}
 }
 

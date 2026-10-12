@@ -347,3 +347,57 @@ func exitErr(t *testing.T, code int) error {
 	}
 	return err
 }
+
+func TestPreview(t *testing.T) {
+	dir := t.TempDir()
+	plain := filepath.Join(dir, "vars.yml")
+	write(t, plain, "# a comment\nuser: admin\n")
+	sopsYAML := filepath.Join(dir, "vault.sops.yml")
+	write(t, sopsYAML, `db:
+    user: ENC[AES256_GCM,data:a==,type:str]
+    password: ENC[AES256_GCM,data:b==,type:str]
+users:
+    - name: ENC[AES256_GCM,data:c==,type:str]
+      key: ENC[AES256_GCM,data:d==,type:str]
+    - ENC[AES256_GCM,data:e==,type:str]
+token: ENC[AES256_GCM,data:f==,type:str]
+sops:
+    lastmodified: "2026-09-06T00:00:00Z"
+    version: 3.13.3
+`)
+	sopsJSON := filepath.Join(dir, "vault.sops.json")
+	write(t, sopsJSON, "{\n\t\"token\": \"ENC[x]\",\n\t\"db\": {\n\t\t\"user\": \"ENC[y]\"\n\t},\n\t\"sops\": {\n\t\t\"version\": \"3.13.3\"\n\t}\n}\n")
+	big := filepath.Join(dir, "big.yml")
+	write(t, big, strings.Repeat("line: of text\n", previewLimit/10))
+
+	tests := []struct {
+		name string
+		file File
+		want string
+	}{
+		{"plain", File{Path: plain, Exists: true}, "# a comment\nuser: admin\n"},
+		{"sops yaml", File{Path: sopsYAML, Kind: KindSops, Exists: true},
+			"db:\n  user\n  password\nusers:\n  - name\n    key\n  -\ntoken\n"},
+		{"sops json", File{Path: sopsJSON, Kind: KindSops, Exists: true}, "token\ndb:\n  user\n"},
+		{"vault", File{Path: plain, Kind: KindVault, Exists: true}, ""},
+		{"not there", File{Path: filepath.Join(dir, "none.yml")}, ""},
+	}
+	for _, tt := range tests {
+		got, err := Preview(tt.file)
+		if err != nil {
+			t.Errorf("%s: %v", tt.name, err)
+			continue
+		}
+		if got != tt.want {
+			t.Errorf("%s = %q, want %q", tt.name, got, tt.want)
+		}
+	}
+
+	got, err := Preview(File{Path: big, Exists: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) > previewLimit+len("…\n") || !strings.HasSuffix(got, "text\n…\n") {
+		t.Errorf("a big file is not cut at a whole line: %d bytes, ends %q", len(got), got[len(got)-20:])
+	}
+}

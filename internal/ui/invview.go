@@ -275,16 +275,38 @@ func fileDetail(f invfile.File) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "[%s]%s[-]\n\n", tag(colorText), tview.Escape(shortPath(f.Path)))
 
-	state := "exists"
-	if !f.Exists {
-		state = "not there yet — enter creates it"
+	if f.Exists {
+		previewFile(&b, f)
+		return b.String()
 	}
-	fmt.Fprintf(&b, "[%s]%-8s[-] %s\n", tag(colorDim), "state", state)
+	fmt.Fprintf(&b, "[%s]%-8s[-] %s\n", tag(colorDim), "state", "not there yet — enter creates it")
 	fmt.Fprintf(&b, "[%s]%-8s[-] %s\n", tag(colorDim), "opens", opensWith(f))
-	if f.Kind == invfile.KindSops && !f.Exists {
+	if f.Kind == invfile.KindSops {
 		fmt.Fprintf(&b, "\n[%s]sops writes a new file from the creation rules in the tree's\n.sops.yaml. Without a rule for this path it will say so rather\nthan write anything readable.[-]\n", tag(colorDim))
 	}
 	return b.String()
+}
+
+// previewFile is what an existing file has in it: the text itself, or for a
+// sops file just its keys, since the values are ciphertext.
+func previewFile(b *strings.Builder, f invfile.File) {
+	if f.Kind == invfile.KindVault {
+		fmt.Fprintf(b, "[%s]encrypted with ansible-vault, no preview[-]\n", tag(colorDim))
+		return
+	}
+	text, err := invfile.Preview(f)
+	if err != nil {
+		fmt.Fprintf(b, "[%s]%s[-]\n", tag(colorError), tview.Escape(err.Error()))
+		return
+	}
+	if f.Kind == invfile.KindSops {
+		fmt.Fprintf(b, "[%s]keys only, the values are encrypted[-]\n\n", tag(colorDim))
+	}
+	if strings.TrimSpace(text) == "" {
+		fmt.Fprintf(b, "[%s]empty[-]\n", tag(colorDim))
+		return
+	}
+	fmt.Fprintf(b, "[%s]%s[-]", tag(colorText), tview.Escape(text))
 }
 
 // opensWith is the one-line answer to "what happens when I press enter".
