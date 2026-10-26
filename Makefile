@@ -5,7 +5,7 @@ COMMIT  := $(shell git rev-parse --short HEAD 2>/dev/null || echo unknown)
 LDFLAGS := -s -w -X $(PKG)/internal/version.Version=$(VERSION) -X $(PKG)/internal/version.Commit=$(COMMIT)
 BINDIR  := /usr/local/bin
 
-.PHONY: help build run install test race it lint fmt vet tidy clean dist \
+.PHONY: help build run install test race it lint fmt vet tidy clean dist vuln \
 	lab lab-up lab-down lab-status lab-ssh
 
 help: ## Show this help
@@ -43,9 +43,12 @@ fmt: ## Format
 tidy: ## Tidy go.mod
 	go mod tidy
 
+vuln: ## Check dependencies and stdlib for known vulnerabilities
+	go run golang.org/x/vuln/cmd/govulncheck@v1.9.0 ./...
+
 # No windows: the runner needs a pty to make ansible colour its output and
 # prompt for passwords, and there is no pty on windows.
-dist: ## Cross-compile release binaries into ./dist
+dist: vuln ## Cross-compile release binaries into ./dist
 	@mkdir -p dist
 	@for target in darwin/arm64 darwin/amd64 linux/arm64 linux/amd64; do \
 		os=$${target%/*}; arch=$${target#*/}; \

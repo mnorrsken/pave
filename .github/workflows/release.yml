@@ -34,6 +34,10 @@ jobs:
       - name: Unit tests
         run: go test -race ./...
 
+      - name: govulncheck
+        if: runner.os == 'Linux'
+        run: go run golang.org/x/vuln/cmd/govulncheck@v1.9.0 ./...
+
       # The integration tests need a real ansible; installing it is cheap
       # next to what they check, which is that pave's idea of an inventory
       # and of a playbook run matches ansible's.
