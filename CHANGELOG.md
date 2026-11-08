@@ -4,6 +4,14 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the versions
 follow [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.1] - 2026-11-08
+
+### Fixed
+
+- pave no longer goes black and uses 100% CPU after a run or the editor when
+  the terminal changed size just as the command exited. It now starts a new
+  screen instead of resuming the old one.
+
 ## [0.6.0] - 2026-10-12
 
 ### Added
