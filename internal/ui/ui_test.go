@@ -167,6 +167,41 @@ func TestARunHappensOnTheTerminal(t *testing.T) {
 	}
 }
 
+// A run or the editor gets the terminal from a screen pave lets go of, and
+// pave comes back on a new one at the size the terminal is now. Resuming the
+// old screen after a resize is what drew nothing and spun the CPU.
+func TestTheTerminalComesBackOnANewScreen(t *testing.T) {
+	next := tcell.NewSimulationScreen("UTF-8")
+	h := newHarness(t, func(o *Options) {
+		o.NewScreen = func() (tcell.Screen, error) { return next, nil }
+	})
+
+	var ran bool
+	var err error
+	h.app.QueueUpdate(func() { err = h.app.handOver(func() { ran = true }) })
+	if err != nil || !ran {
+		t.Fatalf("handOver: ran = %v, err = %v", ran, err)
+	}
+
+	// handOver waits for the first draw, so the new screen is already drawn.
+	var text string
+	var w int
+	h.inspect(func() {
+		var cells []tcell.SimCell
+		cells, w, _ = next.GetContents()
+		var b strings.Builder
+		for _, c := range cells {
+			if len(c.Runes) > 0 {
+				b.WriteRune(c.Runes[0])
+			}
+		}
+		text = b.String()
+	})
+	if w != 80 || !strings.Contains(text, "onboard") {
+		t.Errorf("new screen is %d wide and shows %q, want 80 and the tree", w, text)
+	}
+}
+
 func TestFailedRunSaysSo(t *testing.T) {
 	h := newHarness(t)
 	h.term.onRun = func(run.Cmd, io.Writer) error { return exitError(t, 2) }

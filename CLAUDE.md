@@ -63,8 +63,12 @@ for any UI change.
   playbook tree is only right when it is the page on screen. A new full screen
   page needs a case there, or its arrow keys do nothing until tab is pressed.
 - **A run and the editor both take the whole terminal.** Both go through
-  `Application.Suspend`, which blocks the main loop until the command exits,
-  so nothing draws and nothing queued onto it runs until it comes back; being
+  `handOver`, never `Application.Suspend`: tcell v2.13.10's Resume can loop
+  forever in the next draw (black screen, 100% CPU) when the terminal size
+  changes as the command exits. `handOver` ends the screen, runs the command
+  and starts a new screen. It blocks the main loop until the command exits
+  and the new screen is drawn, so nothing draws and nothing queued onto it
+  runs until it comes back; being
   synchronous on the main loop is also what keeps a run and the editor from
   ever overlapping. A `^C` during a run reaches pave too, not just ansible:
   `run.Tee` catches it with `signal.Notify`, never `signal.Ignore` — an

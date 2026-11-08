@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/gdamore/tcell/v2"
@@ -60,6 +61,9 @@ type Options struct {
 	// session a Terminal to run the commands on, and takes the terminal back
 	// once session returns. It defaults to the real one.
 	OnTerminal func(session func(Terminal)) error
+	// NewScreen opens the terminal again after a run or the editor had it.
+	// Defaults to tcell.NewScreen.
+	NewScreen func() (tcell.Screen, error)
 	// LogDir is where every playbook run is written. Defaults to .pave/logs
 	// under the root.
 	LogDir string
@@ -121,6 +125,14 @@ type App struct {
 
 	filtering bool
 	done      chan struct{}
+
+	// screen is the terminal tview last drew on, kept so handOver can let go
+	// of it. Draws also happen off the main loop, hence the lock. backOn is
+	// closed by the first draw on next, the screen handOver is waiting for.
+	screenMu sync.Mutex
+	screen   tcell.Screen
+	next     tcell.Screen
+	backOn   chan struct{}
 }
 
 // New builds the interface and does the first scan, so the tree is populated
@@ -147,6 +159,9 @@ func New(opts Options) *App {
 	}
 	if opts.Now == nil {
 		opts.Now = time.Now
+	}
+	if opts.NewScreen == nil {
+		opts.NewScreen = tcell.NewScreen
 	}
 	if opts.LogDir == "" {
 		opts.LogDir = filepath.Join(opts.Root, ".pave", "logs")
@@ -219,7 +234,16 @@ func New(opts Options) *App {
 
 	a.pages = tview.NewPages().AddPage("main", main, true, true)
 	a.SetRoot(a.pages, true).SetInputCapture(a.globalKeys)
-	a.SetAfterDrawFunc(func(tcell.Screen) { a.reflowDetail() })
+	a.SetAfterDrawFunc(func(s tcell.Screen) {
+		a.screenMu.Lock()
+		a.screen = s
+		if a.backOn != nil && s == a.next {
+			close(a.backOn)
+			a.next, a.backOn = nil, nil
+		}
+		a.screenMu.Unlock()
+		a.reflowDetail()
+	})
 	a.SetFocus(a.tree)
 
 	if a.opts.Edit == nil {
@@ -516,12 +540,47 @@ func (a *App) play(steps []step, log *runLog, logErr error) {
 	a.reloadCert()
 }
 
-// suspendForRun is the real OnTerminal: tview hands the terminal back for the
-// length of the session and draws everything again afterwards.
+// suspendForRun is the real OnTerminal: the interface lets go of the terminal
+// for the length of the session and draws everything again afterwards.
 func (a *App) suspendForRun(session func(Terminal)) error {
-	if !a.Suspend(func() { session(realTerminal{}) }) {
-		return fmt.Errorf("the interface would not release the terminal")
+	return a.handOver(func() { session(realTerminal{}) })
+}
+
+// handOver lets go of the terminal, runs f on it, and takes it back with a
+// new screen. It runs on the main loop, so nothing else runs until f returns
+// and the interface is drawn again.
+//
+// Not Application.Suspend. tcell's Resume sizes its cell buffer to the
+// terminal as it is at that instant but goes on drawing at the size it had
+// before, and when the two differ the next draw loops forever on a cell that
+// is not there: a black screen and a spinning CPU. A new screen sizes both at
+// once.
+func (a *App) handOver(f func()) error {
+	a.screenMu.Lock()
+	old := a.screen
+	a.screenMu.Unlock()
+	if old == nil {
+		return fmt.Errorf("the interface has no terminal to let go of")
 	}
+	// tview sees the screen end, and waits for the one SetScreen hands it.
+	old.Fini()
+	f()
+
+	screen, err := a.opts.NewScreen()
+	if err != nil {
+		// Nothing to draw on again: better gone than a dead interface.
+		a.Stop()
+		return fmt.Errorf("take the terminal back: %w", err)
+	}
+	// tview starts and draws the new screen off the main loop. Wait for that
+	// draw, as Suspend does, so nothing on the main loop draws on a screen
+	// that is still starting.
+	back := make(chan struct{})
+	a.screenMu.Lock()
+	a.next, a.backOn = screen, back
+	a.screenMu.Unlock()
+	a.SetScreen(screen)
+	<-back
 	return nil
 }
 
@@ -878,12 +937,12 @@ func (a *App) editFile(f invfile.File) {
 	a.reloadInventoryFiles()
 }
 
-// suspendAndRun is the real editor: tview hands the terminal back, the
-// command runs on it, and the interface is redrawn when it exits.
+// suspendAndRun is the real editor: the interface lets go of the terminal,
+// the command runs on it, and the interface is redrawn when it exits.
 func (a *App) suspendAndRun(c run.Cmd) error {
 	var err error
-	if !a.Suspend(func() { err = run.Interactive(c) }) {
-		return fmt.Errorf("the interface would not release the terminal")
+	if herr := a.handOver(func() { err = run.Interactive(c) }); herr != nil {
+		return herr
 	}
 	return err
 }
