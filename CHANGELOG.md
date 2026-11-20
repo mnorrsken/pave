@@ -4,6 +4,14 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the versions
 follow [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.2] - 2026-11-20
+
+### Changed
+
+- Updated dependencies: go-colorful 1.4.1, golang.org/x/sys 0.50.0,
+  golang.org/x/term 0.48.0 and golang.org/x/text 0.44.0. go-runewidth is no
+  longer needed and is gone. No change in behaviour.
+
 ## [0.6.1] - 2026-11-08
 
 ### Fixed
