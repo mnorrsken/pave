@@ -4,6 +4,18 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the versions
 follow [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.0] - 2026-11-27
+
+### Added
+
+- A `container:` config key runs `ansible-playbook` inside a container
+  (docker or podman) instead of on this machine. On macOS the connections then
+  come from the container runtime, which has local network access, not from
+  the terminal app. The root is mounted at the same path, the password files
+  read-only, and the ssh-agent is forwarded when `SSH_AUTH_SOCK` is set.
+  `args` adds more `run` arguments, such as extra volumes. The command box is
+  titled "command in <image>" and `pave -paths` shows the image.
+
 ## [0.6.2] - 2026-11-20
 
 ### Changed
