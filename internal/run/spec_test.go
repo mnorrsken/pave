@@ -106,6 +106,43 @@ func TestCmdEnv(t *testing.T) {
 	}
 }
 
+// In a container the paths have to mean what they do here, the variables go
+// in by name and the playbook command comes after the image unchanged.
+func TestCmdInAContainer(t *testing.T) {
+	s := Spec{Bin: "ansible-playbook", Dir: "/w/base", ConfigFile: "/w/base/ansible.cfg",
+		Playbook: "site.yml", Diff: true, ConnPassFile: "/tmp/pass",
+		Container: &Container{Runtime: "podman", Image: "ansible:1", Mount: "/w",
+			Env: []string{"SOPS_AGE_KEY_FILE"}, Args: []string{"--dns-search", "internal"}}}
+	c := s.Cmd([]string{"PATH=/bin", "SSH_AUTH_SOCK=/old", "SSH_AUTH_SOCK=/run/agent"})
+
+	want := []string{"run", "--rm", "--interactive", "--tty",
+		"--volume", "/w:/w",
+		"--mount", "type=bind,source=/tmp/pass,target=/tmp/pass,readonly",
+		"--volume", "/run/agent:/ssh-agent", "--env", "SSH_AUTH_SOCK=/ssh-agent",
+		"--workdir", "/w/base",
+		"--env", "ANSIBLE_CONFIG", "--env", "ANSIBLE_FORCE_COLOR", "--env", "SOPS_AGE_KEY_FILE",
+		"--dns-search", "internal",
+		"ansible:1", "ansible-playbook", "site.yml", "--diff", "--connection-password-file", "/tmp/pass"}
+	if c.Path != "podman" || !reflect.DeepEqual(c.Args, want) {
+		t.Errorf("cmd = %s %q\nwant  podman %q", c.Path, c.Args, want)
+	}
+	// The runtime hands the named variables on, so it needs their values.
+	if !has(c.Env, "ANSIBLE_CONFIG=/w/base/ansible.cfg") || !has(c.Env, "ANSIBLE_FORCE_COLOR=1") {
+		t.Errorf("env = %q", c.Env)
+	}
+	if got := s.Preview(); got != "ansible-playbook site.yml --diff --connection-password-file /tmp/pass" {
+		t.Errorf("Preview() = %s, want the command run inside", got)
+	}
+}
+
+// No agent, no agent mount: an empty source would be a mount of nothing.
+func TestCmdInAContainerWithoutAnAgent(t *testing.T) {
+	s := Spec{Bin: "ansible-playbook", Playbook: "site.yml", Container: &Container{Runtime: "docker", Image: "a"}}
+	if got := strings.Join(s.Cmd(nil).Args, " "); strings.Contains(got, "ssh-agent") {
+		t.Errorf("args = %s, want no agent", got)
+	}
+}
+
 // A project with no ansible.cfg must not export an empty ANSIBLE_CONFIG:
 // ansible would take it as "no config at all" rather than "look as usual".
 func TestCmdWithoutConfigFile(t *testing.T) {

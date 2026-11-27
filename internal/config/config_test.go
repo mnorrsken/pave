@@ -17,6 +17,9 @@ func TestLoadMissingFileIsDefaults(t *testing.T) {
 	if cfg.SSHCert.Validity != "+12h" {
 		t.Errorf("validity = %q", cfg.SSHCert.Validity)
 	}
+	if cfg.Container.Image != "" || cfg.Container.Runtime != "docker" {
+		t.Errorf("container = %+v, want none, docker when there is one", cfg.Container)
+	}
 	if cfg.Defaults.Diff == nil || !*cfg.Defaults.Diff {
 		t.Errorf("diff should default to on")
 	}

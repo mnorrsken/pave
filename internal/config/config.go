@@ -40,6 +40,10 @@ type Config struct {
 	// script to run playbooks inside a container.
 	AnsiblePlaybookBin string `yaml:"ansible_playbook_bin"`
 
+	// Container, when it names an image, runs every playbook inside a
+	// container instead of on this machine.
+	Container Container `yaml:"container"`
+
 	// AnsibleInventoryBin is the command that lists the inventory.
 	AnsibleInventoryBin string `yaml:"ansible_inventory_bin"`
 
@@ -57,6 +61,21 @@ type Config struct {
 
 	SSHCert  SSHCert  `yaml:"ssh_cert"`
 	Defaults Defaults `yaml:"defaults"`
+}
+
+// Container is where a run goes instead of this machine. On macOS that is a
+// way around the local network privacy check: the connections to the hosts
+// come from the container runtime, which has been allowed on the local
+// network, rather than from a terminal that has not.
+type Container struct {
+	// Image is what ansible-playbook runs in. Empty means no container.
+	Image string `yaml:"image"`
+	// Runtime is the command that runs the image: docker or podman. Defaults
+	// to docker.
+	Runtime string `yaml:"runtime"`
+	// Args go to `run` before the image: more mounts, a network, a user.
+	// Each is expanded like a path, so ~ and $HOME work in a mount.
+	Args []string `yaml:"args"`
 }
 
 // SSHCert describes the short-lived operator certificate pave signs.
@@ -158,6 +177,9 @@ func (c *Config) applyDefaults() {
 	}
 	if c.AnsiblePlaybookBin == "" {
 		c.AnsiblePlaybookBin = "ansible-playbook"
+	}
+	if c.Container.Runtime == "" {
+		c.Container.Runtime = "docker"
 	}
 	if c.AnsibleInventoryBin == "" {
 		c.AnsibleInventoryBin = "ansible-inventory"

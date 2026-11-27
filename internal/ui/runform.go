@@ -144,8 +144,8 @@ const runOptionsHeight = formHeight + previewRows
 
 // runOptionsBox is the dialog the options are filled in before a run: the
 // form, and the command it currently describes.
-func runOptionsBox(f *runForm, preview *tview.TextView) tview.Primitive {
-	preview.SetBorder(true).SetBorderColor(colorBorder).SetTitleColor(colorTitle).SetTitle(" command ")
+func runOptionsBox(f *runForm, preview *tview.TextView, title string) tview.Primitive {
+	preview.SetBorder(true).SetBorderColor(colorBorder).SetTitleColor(colorTitle).SetTitle(title)
 	return tview.NewFlex().SetDirection(tview.FlexRow).
 		AddItem(f, formHeight, 0, true).
 		AddItem(preview, previewRows, 0, false)

@@ -9,8 +9,8 @@ root: ~/dev/projects/ansible-restructure/workspace
 # playbook yourself.
 onboard_playbook: base/playbooks/onboard.yml
 
-# The command a run executes. Point it at a wrapper script to run playbooks in
-# a container.
+# The command a run executes. Point it at a wrapper script to run playbooks
+# elsewhere. With container: set below, it is the command run inside the image.
 ansible_playbook_bin: ansible-playbook
 ansible_inventory_bin: ansible-inventory
 # Asked where the inventory is kept, for the inventory browser.
@@ -19,6 +19,19 @@ ansible_config_bin: ansible-config
 # Added to the environment of every run and of every inventory read.
 env:
   SOPS_AGE_KEY_FILE: ~/.config/sops/age/keys.txt
+
+# Run playbooks in a container, mainly to get around the macOS local network
+# privacy check: the connections come from the container runtime, not from the
+# terminal. Setting image turns it on. The root is mounted at the same path,
+# and so are the password files and the ssh-agent. args go to `<runtime> run`
+# before the image and are expanded like paths (~, $HOME, $VARS); use them to
+# mount whatever else the run needs from outside the root, at the same path.
+# --group-add 0 lets a non-root image use the agent socket on Docker Desktop.
+# Only playbook runs go in; inventory reads, editing and signing stay local.
+# container:
+#   image: registry.example.com/ansible-runner:latest
+#   runtime: docker    # or podman
+#   args: [--group-add, "0", --volume, "$HOME/.config/sops/age:$HOME/.config/sops/age:ro"]
 
 # What the c key signs.
 ssh_cert:

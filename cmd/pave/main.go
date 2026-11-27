@@ -58,6 +58,9 @@ func run() error {
 		fmt.Println("root:   ", dir)
 		fmt.Println("override:", filepath.Join(dir, config.FileName))
 		fmt.Println("playbook:", cfg.AnsiblePlaybookBin)
+		if c := cfg.Container; c.Image != "" {
+			fmt.Println("in:      ", c.Runtime, c.Image)
+		}
 		fmt.Println("key:    ", config.Expand(cfg.SSHCert.Key))
 		fmt.Println("CA key: ", config.Expand(cfg.SSHCert.CAKey))
 		return nil

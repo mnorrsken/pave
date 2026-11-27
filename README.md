@@ -128,6 +128,39 @@ editor: nvim
 script and the runs go wherever that script sends them — a container, another
 host — without pave having to know.
 
+`container` runs the playbook in a container instead. It exists mainly for
+macOS, where the local network privacy check blocks the terminal app from
+reaching hosts on the LAN: the connections then come from the container
+runtime (Docker Desktop, say), which is allowed.
+
+```yaml
+container:
+  image: registry.example.com/ansible-runner:latest
+  runtime: docker    # or podman; docker if left out
+  args: [--group-add, "0", --volume, "$HOME/.config/sops/age:$HOME/.config/sops/age:ro"]
+```
+
+Setting `image` turns it on; left empty, runs stay local. `args` go to
+`<runtime> run` before the image, and each one is expanded like a path, so a
+leading `~` and `$HOME` or other `$VARS` work. It can also be set in a root's
+`.pave.yaml`. `ansible_playbook_bin` is then the command run inside the
+container.
+
+pave mounts the root at the same path, so the project, `ANSIBLE_CONFIG` and
+the paths in `ansible.cfg` mean the same inside. The password files from the
+credentials dialog are mounted read-only, and when `SSH_AUTH_SOCK` is set the
+agent is forwarded, so the certificate `c` signs is usable. The keys of `env:`
+are passed by name, never as values in the command line. Anything else the run
+needs from outside the root, such as the age key `SOPS_AGE_KEY_FILE` points at,
+role symlinks that leave the root, or an inventory outside it, has to be
+mounted with `args`, at the same path. On Docker Desktop for macOS the agent
+socket is owned by root with mode 0660, so an image that runs as a non-root
+user needs `--group-add, "0"` to use it.
+
+Only playbook runs go into the container. The inventory, `ansible-config`,
+sops and ansible-vault editing and certificate signing still run on this
+machine, so ansible has to be installed here too.
+
 `editor` is what the inventory browser opens a file with. It is a command
 line, not just a name, so `code -w` works. Left out, it is `$VISUAL`, then
 `$EDITOR`, then `vi`.
@@ -145,6 +178,12 @@ Where the inventory lives is asked for the same way: `ansible-config dump`
 reports the path that actually won, whether it came from `ansible.cfg`, the
 environment or a wrapper's command line. pave never reads `ansible.cfg`
 itself.
+
+With `container` set, the command is `<runtime> run --rm --interactive --tty`
+with the mounts and `--env` flags above, then the image and the usual
+`ansible-playbook` command. The command box shows only the `ansible-playbook`
+part, titled "command in <image>"; the `::` line at the start of a run and the
+log show the whole thing.
 
 The command runs on a pty. That is what makes ansible colour its output and
 lets it prompt, and it is why there is no Windows build.

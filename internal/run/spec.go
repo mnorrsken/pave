@@ -12,7 +12,7 @@ import (
 // Spec is one playbook run as the user has configured it in the form.
 type Spec struct {
 	// Bin is the command to execute, normally ansible-playbook. It may be a
-	// wrapper script, which is how a container run is arranged.
+	// wrapper script. With a Container it is what runs inside it.
 	Bin string
 	// Dir is the project directory the run happens in.
 	Dir string
@@ -50,7 +50,30 @@ type Spec struct {
 	// ExtraArgs is appended verbatim, split the way a shell would. It is the
 	// escape hatch for anything the form does not model.
 	ExtraArgs string
+
+	// Container runs Bin inside a container instead of here. Nil runs it
+	// here.
+	Container *Container
 }
+
+// Container is a container a run goes into.
+type Container struct {
+	// Runtime is the command that runs it: docker or podman.
+	Runtime string
+	Image   string
+	// Mount is mounted at the same path inside, so the project directory,
+	// ANSIBLE_CONFIG and the paths in ansible.cfg mean the same thing in
+	// there as out here. It is the root being browsed.
+	Mount string
+	// Env are more variables passed in by name, their values taken from the
+	// environment Cmd is given. The ones Cmd sets itself always go in.
+	Env []string
+	// Args go to the runtime's run before the image.
+	Args []string
+}
+
+// agentSocket is where a forwarded ssh-agent is found inside a container.
+const agentSocket = "/ssh-agent"
 
 // Args is everything after argv[0]. Long flags throughout: the preview line is
 // meant to be read, and copied into a terminal when something needs doing by
@@ -127,12 +150,73 @@ func (s Spec) Cmd(env []string) Cmd {
 	// The pty already makes ansible colour its output; this covers the case of
 	// a wrapper that pipes somewhere in between.
 	e = append(e, "ANSIBLE_FORCE_COLOR=1")
-	return Cmd{Path: s.Bin, Args: s.Args(), Dir: s.Dir, Env: e}
+	if s.Container == nil {
+		return Cmd{Path: s.Bin, Args: s.Args(), Dir: s.Dir, Env: e}
+	}
+	return Cmd{Path: s.Container.Runtime, Args: s.containerArgs(e), Dir: s.Dir, Env: e}
 }
 
-// Preview is the command as a line you could paste into a shell.
+// containerArgs is the runtime's command line for a run in s.Container. env
+// is the environment the runtime gets; variables go in by name, so their
+// values come from there and stay out of argv.
+func (s Spec) containerArgs(env []string) []string {
+	c := s.Container
+	// A terminal inside too: ansible prompts for passwords on it, and ^C
+	// reaches it through it.
+	args := []string{"run", "--rm", "--interactive", "--tty"}
+	if c.Mount != "" {
+		args = append(args, "--volume", c.Mount+":"+c.Mount)
+	}
+	// The password files are outside the root, in the temp directory. Not
+	// --volume f:f:ro: Docker Desktop 29 then puts the file inside at the
+	// wrong name, with an "o" on the end, when it is under /var/folders.
+	for _, f := range []string{s.ConnPassFile, s.BecomePassFile} {
+		if f != "" {
+			args = append(args, "--mount", "type=bind,source="+f+",target="+f+",readonly")
+		}
+	}
+	// The certificate pave signs is in the agent, so the agent has to be
+	// there too.
+	if sock := lookup(env, "SSH_AUTH_SOCK"); sock != "" {
+		args = append(args, "--volume", sock+":"+agentSocket, "--env", "SSH_AUTH_SOCK="+agentSocket)
+	}
+	if s.Dir != "" {
+		args = append(args, "--workdir", s.Dir)
+	}
+	var names []string
+	if s.ConfigFile != "" {
+		names = append(names, "ANSIBLE_CONFIG")
+	}
+	names = append(names, "ANSIBLE_FORCE_COLOR")
+	for _, n := range append(names, c.Env...) {
+		args = append(args, "--env", n)
+	}
+	args = append(args, c.Args...)
+	args = append(args, c.Image, s.Bin)
+	return append(args, s.Args()...)
+}
+
+// lookup is the value of name in env, the last one winning as it does for
+// exec.
+func lookup(env []string, name string) string {
+	v := ""
+	for _, e := range env {
+		if k, val, ok := strings.Cut(e, "="); ok && k == name {
+			v = val
+		}
+	}
+	return v
+}
+
+// Preview is the ansible-playbook command as a line you could paste into a
+// shell. For a run in a container it is the command run in there.
 func (s Spec) Preview() string {
-	parts := append([]string{s.Bin}, s.Args()...)
+	return Cmd{Path: s.Bin, Args: s.Args()}.Line()
+}
+
+// Line is the command as a line you could paste into a shell.
+func (c Cmd) Line() string {
+	parts := append([]string{c.Path}, c.Args...)
 	for i, p := range parts {
 		parts[i] = quote(p)
 	}

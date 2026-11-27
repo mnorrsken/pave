@@ -4,8 +4,10 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"maps"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -192,11 +194,11 @@ func New(opts Options) *App {
 
 	a.preview = tview.NewTextView().SetDynamicColors(true).SetWrap(true)
 	a.preview.SetBackgroundColor(colorBackground)
-	a.preview.SetBorder(true).SetBorderColor(colorBorder).SetTitleColor(colorTitle).SetTitle(" command ")
+	a.preview.SetBorder(true).SetBorderColor(colorBorder).SetTitleColor(colorTitle).SetTitle(a.commandTitle())
 
 	a.formPreview = tview.NewTextView().SetDynamicColors(true).SetWrap(true)
 	a.formPreview.SetBackgroundColor(colorBackground)
-	a.runOptions = center(runOptionsBox(a.form, a.formPreview), optionsWidth, runOptionsHeight)
+	a.runOptions = center(runOptionsBox(a.form, a.formPreview, a.commandTitle()), optionsWidth, runOptionsHeight)
 
 	a.status = newStatusBar()
 
@@ -368,9 +370,41 @@ func (a *App) currentSpec() (run.Spec, bool) {
 		Dir:        ref.project.Dir,
 		ConfigFile: ref.project.ConfigFile,
 		Playbook:   filepath.ToSlash(ref.playbook.Rel),
+		Container:  a.container(),
 	}
 	a.form.apply(&spec)
 	return spec, true
+}
+
+// container is where a run goes when the config names an image, nil when it
+// runs here.
+func (a *App) container() *run.Container {
+	c := a.opts.Config.Container
+	if c.Image == "" {
+		return nil
+	}
+	args := make([]string, len(c.Args))
+	for i, arg := range c.Args {
+		args[i] = config.Expand(arg)
+	}
+	return &run.Container{
+		Runtime: c.Runtime,
+		Image:   c.Image,
+		Mount:   a.opts.Root,
+		// What the config adds to a run's environment is meant for ansible,
+		// so it goes in with it.
+		Env:  slices.Sorted(maps.Keys(a.opts.Config.Env)),
+		Args: args,
+	}
+}
+
+// commandTitle is the title of the boxes that show the command. The command
+// in them is ansible-playbook's either way, so the title says where it runs.
+func (a *App) commandTitle() string {
+	if img := a.opts.Config.Container.Image; img != "" {
+		return " command in " + tview.Escape(img) + " "
+	}
+	return " command "
 }
 
 func (a *App) renderPreview() {
@@ -465,10 +499,11 @@ func (a *App) runSelected(check bool) {
 	// A log that cannot be written is no reason not to run: the run says so
 	// and goes ahead.
 	log, logErr := openRunLog(a.opts.LogDir, spec.Playbook, a.opts.Now())
-	a.play([]step{{
-		label: spec.Preview(),
-		cmd:   spec.Cmd(a.opts.Config.RunEnv()),
-	}}, log, logErr)
+	// The whole command, the container's part too: on the terminal it has
+	// the room, and when the container is the problem it is the line to try
+	// by hand.
+	cmd := spec.Cmd(a.opts.Config.RunEnv())
+	a.play([]step{{label: cmd.Line(), cmd: cmd}}, log, logErr)
 }
 
 // Terminal is the terminal pave was started on, given back for a run.

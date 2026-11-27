@@ -296,6 +296,44 @@ func TestCredentialsBecomePasswordFiles(t *testing.T) {
 	}
 }
 
+// With an image configured the run goes through the runtime, the root and the
+// password files mounted, and the boxes say where it runs.
+func TestRunInAContainer(t *testing.T) {
+	h := newHarness(t, func(o *Options) {
+		o.Config.Container = config.Container{Image: "ansible:1", Runtime: "docker", Args: []string{"--volume", "~/x:/x"}}
+		o.Config.Env = map[string]string{"SOPS_AGE_KEY_FILE": "~/keys.txt"}
+	})
+	h.inspect(func() { h.app.form.setCredentials(credentials{Password: "s3cret"}) })
+	h.runNow()
+	h.waitFor("the run", func() bool { return h.term.pauseCount() == 1 })
+
+	c := h.term.lastCmd()
+	args := strings.Join(c.Args, " ")
+	if c.Path != "docker" || !strings.Contains(args, "ansible:1 ansible-playbook ") {
+		t.Fatalf("cmd = %s %s, want the playbook run in the image", c.Path, args)
+	}
+	if !strings.Contains(args, "--volume testdata/tree:testdata/tree") {
+		t.Errorf("args = %s, want the root mounted", args)
+	}
+	pass := valueAfter(c.Args, "--connection-password-file")
+	if pass == "" || !strings.Contains(args, "--mount type=bind,source="+pass+",target="+pass+",readonly") {
+		t.Errorf("args = %s, want the password file mounted", args)
+	}
+	if !strings.Contains(args, "--env SOPS_AGE_KEY_FILE") {
+		t.Errorf("args = %s, want the configured env passed in", args)
+	}
+	home, _ := os.UserHomeDir()
+	if !strings.Contains(args, "--volume "+home+"/x:/x") {
+		t.Errorf("args = %s, want the configured args expanded", args)
+	}
+	if got := h.app.preview.GetTitle(); got != " command in ansible:1 " {
+		t.Errorf("title = %q", got)
+	}
+	if said := h.term.saidLines(); len(said) == 0 || !strings.HasPrefix(said[0], "docker run ") {
+		t.Errorf("said = %q, want the whole command first", said)
+	}
+}
+
 func TestFilterNarrowsTheTree(t *testing.T) {
 	h := newHarness(t)
 
